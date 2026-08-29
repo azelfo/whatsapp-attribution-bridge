@@ -17,3 +17,5 @@ $wpdb->query("DROP TABLE IF EXISTS {$wpdb->prefix}wab_attributions");
 delete_option('wab_settings');
 delete_option('wab_messages');
 delete_option('wab_db_version');
+delete_option('wab_webhook_log');
+delete_transient('wab_conn_test');

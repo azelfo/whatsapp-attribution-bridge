@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WhatsApp Attribution Bridge
  * Description: Liga cliques rastreados no WhatsApp a contatos do GoHighLevel.
- * Version: 0.2.4
+ * Version: 0.2.5
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Marcelo
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WAB_VERSION', '0.2.4');
+define('WAB_VERSION', '0.2.5');
 define('WAB_FILE', __FILE__);
 define('WAB_DIR', plugin_dir_path(__FILE__));
 require_once WAB_DIR . 'includes/core.php';
@@ -340,6 +340,11 @@ function wab_match_permission(WP_REST_Request $request)
     $secret = (string) wab_settings()['webhook_secret'];
     $received = (string) $request->get_header('authorization');
     if ($secret === '' || !hash_equals('Bearer ' . $secret, $received)) {
+        // Limita o log de falha de auth: sem isso, spam no endpoint publico viraria
+        // escrita de option ilimitada (o rate limit do match roda so depois daqui).
+        if (!wab_rate_limited('match_auth', 10, MINUTE_IN_SECONDS)) {
+            wab_log_webhook($secret === '' ? 'secret_nao_configurado' : 'segredo_invalido', $request->get_body());
+        }
         return new WP_Error('wab_unauthorized', 'Não autorizado.', array('status' => 401));
     }
     return true;
@@ -521,7 +526,39 @@ function wab_retry_pending()
 }
 add_action('wab_retry_pending', 'wab_retry_pending');
 
+// ponytail: ring buffer numa option, sem tabela. 50 entradas cobrem depurar um
+// workflow; se precisar de historico longo ou busca, ai sim vira tabela.
+function wab_log_webhook($reason, $body, $contact_id = '')
+{
+    $log = (array) get_option('wab_webhook_log', array());
+    array_unshift($log, array(
+        'at' => current_time('mysql', true),
+        'reason' => substr((string) $reason, 0, 60),
+        'contact' => substr((string) $contact_id, 0, 100),
+        'ip' => wab_client_ip(),
+        'body' => substr((string) $body, 0, 600),
+    ));
+    update_option('wab_webhook_log', array_slice($log, 0, 50), false);
+}
+
 function wab_match(WP_REST_Request $request)
+{
+    $result = wab_match_run($request);
+
+    $error_code = is_wp_error($result) ? $result->get_error_code() : '';
+    $data = is_wp_error($result) ? array() : (array) rest_ensure_response($result)->get_data();
+    $body = $request->get_json_params();
+    $custom = isset($body['customData']) && is_array($body['customData']) ? $body['customData'] : array();
+    wab_log_webhook(
+        wab_core_log_reason($error_code, $data),
+        $request->get_body(),
+        wab_core_body_field((array) $body, $custom, 'contact_id')
+    );
+
+    return $result;
+}
+
+function wab_match_run(WP_REST_Request $request)
 {
     global $wpdb;
     wab_no_cache();
@@ -694,6 +731,80 @@ function wab_delete_message()
 }
 add_action('admin_post_wab_delete_message', 'wab_delete_message');
 
+function wab_test_connection()
+{
+    if (!current_user_can('manage_options')) {
+        wp_die('Sem permissão.');
+    }
+    check_admin_referer('wab_test_connection');
+
+    $settings = wab_settings();
+    $location = (string) $settings['location_id'];
+    if (wab_hl_token() === '' || $location === '') {
+        set_transient('wab_conn_test', array('ok' => false, 'text' => 'Token ou Location ID não configurado.'), 300);
+        wab_admin_redirect('conn_tested');
+    }
+
+    $response = wab_hl_request('GET', 'locations/' . rawurlencode($location) . '/customFields');
+    if (is_wp_error($response)) {
+        set_transient('wab_conn_test', array('ok' => false, 'text' => 'Falha de rede: ' . $response->get_error_message()), 300);
+        wab_admin_redirect('conn_tested');
+    }
+
+    $code = wp_remote_retrieve_response_code($response);
+    $json = json_decode(wp_remote_retrieve_body($response), true);
+    if ($code < 200 || $code >= 300) {
+        $message = isset($json['message']) && is_scalar($json['message']) ? (string) $json['message'] : '';
+        set_transient('wab_conn_test', array('ok' => false, 'text' => 'HTTP ' . $code . ($message !== '' ? ' — ' . $message : '')), 300);
+        wab_admin_redirect('conn_tested');
+    }
+
+    $ids = array();
+    foreach ((array) (isset($json['customFields']) ? $json['customFields'] : array()) as $field) {
+        if (!empty($field['id'])) {
+            $ids[(string) $field['id']] = true;
+        }
+    }
+    $missing = array();
+    foreach ((array) $settings['field_map'] as $logical => $field_id) {
+        if ($field_id !== '' && !isset($ids[$field_id])) {
+            $missing[] = $logical;
+        }
+    }
+
+    $text = 'Conexão OK. ' . count($ids) . ' campos personalizados encontrados.';
+    if ($missing) {
+        $text .= ' Mapeados mas inexistentes no HighLevel: ' . implode(', ', $missing) . '.';
+    }
+    set_transient('wab_conn_test', array('ok' => !$missing, 'text' => $text), 300);
+    wab_admin_redirect('conn_tested');
+}
+add_action('admin_post_wab_test_connection', 'wab_test_connection');
+
+function wab_local_time($mysql_utc)
+{
+    if (!$mysql_utc) {
+        return '—';
+    }
+    $timestamp = strtotime($mysql_utc . ' UTC');
+    if (!$timestamp) {
+        return '—';
+    }
+    $diff = time() - $timestamp;
+    $when = wp_date('d/m/Y H:i', $timestamp);
+    return $diff > 0 && $diff < DAY_IN_SECONDS
+        ? $when . ' (há ' . human_time_diff($timestamp) . ')'
+        : $when;
+}
+
+function wab_status_badge($status)
+{
+    $green = array('matched', 'ok');
+    $grey = array('token_pending', 'processing', 'no_token', 'disabled', 'pending');
+    $color = in_array($status, $green, true) ? '#008a20' : (in_array($status, $grey, true) ? '#646970' : '#d63638');
+    return '<span style="color:' . $color . ';font-weight:600">' . esc_html($status !== '' ? $status : '—') . '</span>';
+}
+
 function wab_admin_page()
 {
     if (!current_user_can('manage_options')) {
@@ -703,7 +814,9 @@ function wab_admin_page()
     $settings = wab_settings();
     $messages = wab_messages();
     $metrics = $wpdb->get_results('SELECT status, COUNT(*) total FROM ' . wab_table() . ' GROUP BY status', OBJECT_K);
-    $view = isset($_GET['view']) && $_GET['view'] === 'logs' ? 'logs' : 'settings';
+    $requested_view = isset($_GET['view']) ? sanitize_key($_GET['view']) : '';
+    $view = in_array($requested_view, array('logs', 'webhooks'), true) ? $requested_view : 'settings';
+    $webhook_log = (array) get_option('wab_webhook_log', array());
     $status_filter = isset($_GET['status']) ? sanitize_key($_GET['status']) : '';
     $log_records = array();
     if ($view === 'logs') {
@@ -736,6 +849,7 @@ function wab_admin_page()
             'message_deleted' => array('success', 'Mensagem excluída.'),
             'invalid_map' => array('error', 'O mapa de campos precisa ser um objeto JSON com valores de texto.'),
             'invalid_message' => array('error', 'Preencha nome, número válido e mensagem.'),
+            'conn_tested' => array('success', 'Teste de conexão concluído — resultado ao lado do botão.'),
         );
         if (isset($notices[$notice_key])) : ?>
             <div class="notice notice-<?php echo esc_attr($notices[$notice_key][0]); ?> is-dismissible"><p><?php echo esc_html($notices[$notice_key][1]); ?></p></div>
@@ -748,7 +862,29 @@ function wab_admin_page()
         <h2 class="nav-tab-wrapper">
             <a href="<?php echo esc_url(admin_url('admin.php?page=wab')); ?>" class="nav-tab <?php echo $view === 'settings' ? 'nav-tab-active' : ''; ?>">Configuração</a>
             <a href="<?php echo esc_url(admin_url('admin.php?page=wab&view=logs')); ?>" class="nav-tab <?php echo $view === 'logs' ? 'nav-tab-active' : ''; ?>">Registros</a>
+            <a href="<?php echo esc_url(admin_url('admin.php?page=wab&view=webhooks')); ?>" class="nav-tab <?php echo $view === 'webhooks' ? 'nav-tab-active' : ''; ?>">Webhooks</a>
         </h2>
+
+        <?php if ($view === 'webhooks') : ?>
+            <p class="description">Toda chamada recebida em <code>/wab/v1/match</code>, inclusive as recusadas. Guarda as 50 mais recentes.</p>
+            <table class="widefat striped">
+                <thead><tr><th>Quando</th><th>Resultado</th><th>Contato</th><th>IP</th><th>Corpo recebido</th></tr></thead>
+                <tbody>
+                <?php if (!$webhook_log) : ?>
+                    <tr><td colspan="5">Nenhum webhook recebido ainda. Se o workflow do HighLevel já rodou, a chamada não chegou até aqui — verifique firewall/segurança e a URL configurada na ação.</td></tr>
+                <?php endif; ?>
+                <?php foreach ($webhook_log as $entry) : ?>
+                    <tr>
+                        <td><?php echo esc_html(wab_local_time(isset($entry['at']) ? $entry['at'] : '')); ?></td>
+                        <td><?php echo wp_kses_post(wab_status_badge(isset($entry['reason']) ? $entry['reason'] : '')); ?></td>
+                        <td><?php echo esc_html(!empty($entry['contact']) ? $entry['contact'] : '—'); ?></td>
+                        <td><?php echo esc_html(isset($entry['ip']) ? $entry['ip'] : '—'); ?></td>
+                        <td><textarea class="code" readonly rows="2" style="width:100%"><?php echo esc_textarea(isset($entry['body']) ? $entry['body'] : ''); ?></textarea></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        <?php endif; ?>
 
         <?php if ($view === 'logs') : ?>
             <?php
@@ -770,12 +906,12 @@ function wab_admin_page()
                 <?php endif; ?>
                 <?php foreach ($log_records as $record) : ?>
                     <tr>
-                        <td><?php echo esc_html($record->clicked_at); ?></td>
+                        <td><?php echo esc_html(wab_local_time($record->clicked_at)); ?></td>
                         <td><?php echo esc_html($record->message_id); ?></td>
                         <td><?php echo esc_html($record->classified_source); ?></td>
-                        <td><?php echo esc_html($record->status); ?></td>
+                        <td><?php echo wp_kses_post(wab_status_badge($record->status)); ?></td>
                         <td><?php echo esc_html($record->contact_id ? $record->contact_id : '—'); ?></td>
-                        <td><?php echo esc_html($record->matched_at ? $record->matched_at : '—'); ?></td>
+                        <td><?php echo esc_html(wab_local_time($record->matched_at)); ?></td>
                         <td><?php echo esc_html($record->attempts); ?></td>
                         <td><?php echo esc_html($record->last_error ? $record->last_error : '—'); ?></td>
                     </tr>
@@ -786,6 +922,49 @@ function wab_admin_page()
         <?php endif; ?>
 
         <?php if ($view === 'settings') : ?>
+        <?php
+        $active_messages = 0;
+        foreach ($messages as $message) {
+            $active_messages += empty($message['active']) ? 0 : 1;
+        }
+        $mapped = 0;
+        foreach ((array) $settings['field_map'] as $field_id) {
+            $mapped += $field_id === '' ? 0 : 1;
+        }
+        $last_webhook = $webhook_log ? $webhook_log[0] : null;
+        $conn_test = get_transient('wab_conn_test');
+        $checks = array(
+            array(!empty($settings['enabled']), 'Rastreamento ativo', 'Marque "Ativo" abaixo — sem isso nada é registrado nem atribuído.'),
+            array($settings['location_id'] !== '', 'Location ID configurado', 'Preencha o Location ID da subconta.'),
+            array(wab_hl_token() !== '', 'Token do HighLevel presente', 'Defina WAB_HL_TOKEN no wp-config.php ou preencha o campo abaixo.'),
+            array($mapped > 0, $mapped . ' campos mapeados', 'Preencha o mapa de campos com os IDs dos campos personalizados.'),
+            array($active_messages > 0, $active_messages . ' mensagem(ns) ativa(s)', 'Crie e ative ao menos uma mensagem rastreável.'),
+            array($last_webhook !== null, $last_webhook ? 'Último webhook: ' . esc_html($last_webhook['reason']) . ' em ' . esc_html(wab_local_time($last_webhook['at'])) : 'Nenhum webhook recebido', 'O HighLevel nunca chamou este site. Confira a URL na ação do workflow e se algum plugin de segurança bloqueia a rota REST.'),
+        );
+        ?>
+        <h2>Diagnóstico</h2>
+        <table class="widefat striped" style="max-width:900px">
+            <tbody>
+            <?php foreach ($checks as $check) : ?>
+                <tr>
+                    <td style="width:30px"><?php echo $check[0] ? '✅' : '⚠️'; ?></td>
+                    <td><?php echo wp_kses_post($check[1]); ?></td>
+                    <td class="description"><?php echo $check[0] ? '' : esc_html($check[2]); ?></td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:12px 0">
+            <input type="hidden" name="action" value="wab_test_connection">
+            <?php wp_nonce_field('wab_test_connection'); ?>
+            <?php submit_button('Testar conexão com o HighLevel', 'secondary', 'submit', false); ?>
+            <?php if (is_array($conn_test)) : ?>
+                <span style="margin-left:10px;color:<?php echo empty($conn_test['ok']) ? '#d63638' : '#008a20'; ?>">
+                    <?php echo esc_html($conn_test['text']); ?>
+                </span>
+            <?php endif; ?>
+        </form>
+
         <h2>Configuração</h2>
         <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
             <input type="hidden" name="action" value="wab_save_settings">

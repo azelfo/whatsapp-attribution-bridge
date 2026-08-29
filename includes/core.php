@@ -80,6 +80,17 @@ function wab_core_classify_source(array $payload)
     return 'referral';
 }
 
+function wab_core_log_reason($error_code, array $data)
+{
+    if ($error_code !== '') {
+        return (string) $error_code;
+    }
+    if (isset($data['reason']) && is_scalar($data['reason'])) {
+        return (string) $data['reason'];
+    }
+    return !empty($data['matched']) ? 'matched' : 'unknown';
+}
+
 function wab_core_body_field(array $data, array $custom, $key)
 {
     if (isset($custom[$key]) && is_scalar($custom[$key])) {

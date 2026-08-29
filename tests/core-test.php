@@ -37,4 +37,9 @@ wab_assert(wab_core_body_field(array('location_id' => 'raiz'), array(), 'locatio
 wab_assert(wab_core_body_field(array('location_id' => 'raiz'), array('location_id' => 'custom'), 'location_id') === 'custom', 'customData tem prioridade sobre a raiz.');
 wab_assert(wab_core_body_field(array(), array(), 'location_id') === '', 'Ausente nos dois deve retornar vazio.');
 
+wab_assert(wab_core_log_reason('wab_location', array()) === 'wab_location', 'Erro deve logar o codigo do WP_Error.');
+wab_assert(wab_core_log_reason('', array('matched' => false, 'reason' => 'no_token')) === 'no_token', 'Resposta com reason deve logar o reason.');
+wab_assert(wab_core_log_reason('', array('matched' => true, 'confidence' => 'exact')) === 'matched', 'Sucesso sem reason deve logar matched.');
+wab_assert(wab_core_log_reason('', array()) === 'unknown', 'Sem codigo e sem dados deve logar unknown.');
+
 echo "core-test.php: ok\n";
