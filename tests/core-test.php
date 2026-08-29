@@ -42,4 +42,10 @@ wab_assert(wab_core_log_reason('', array('matched' => false, 'reason' => 'no_tok
 wab_assert(wab_core_log_reason('', array('matched' => true, 'confidence' => 'exact')) === 'matched', 'Sucesso sem reason deve logar matched.');
 wab_assert(wab_core_log_reason('', array()) === 'unknown', 'Sem codigo e sem dados deve logar unknown.');
 
+$campaign_keys = array('utm_campaign', 'utm_id', 'campaign_id');
+wab_assert(wab_core_payload_value(array('utm_campaign' => 'nome', 'utm_id' => '123'), $campaign_keys) === 'nome', 'utm_campaign tem precedencia sobre utm_id.');
+wab_assert(wab_core_payload_value(array('utm_id' => '123', 'campaign_id' => '999'), $campaign_keys) === '123', 'utm_id (padrao GA4) vem antes do campaign_id legado.');
+wab_assert(wab_core_payload_value(array('campaign_id' => '999'), $campaign_keys) === '999', 'campaign_id legado continua funcionando.');
+wab_assert(wab_core_payload_value(array('utm_campaign' => ''), $campaign_keys) === '', 'Chave vazia nao conta como preenchida.');
+
 echo "core-test.php: ok\n";

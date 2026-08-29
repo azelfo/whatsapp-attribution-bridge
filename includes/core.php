@@ -80,6 +80,16 @@ function wab_core_classify_source(array $payload)
     return 'referral';
 }
 
+function wab_core_payload_value(array $payload, array $keys)
+{
+    foreach ($keys as $key) {
+        if (isset($payload[$key]) && $payload[$key] !== '') {
+            return (string) $payload[$key];
+        }
+    }
+    return '';
+}
+
 function wab_core_log_reason($error_code, array $data)
 {
     if ($error_code !== '') {

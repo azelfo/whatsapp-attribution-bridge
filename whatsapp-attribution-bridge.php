@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WhatsApp Attribution Bridge
  * Description: Liga cliques rastreados no WhatsApp a contatos do GoHighLevel.
- * Version: 0.2.5
+ * Version: 0.2.6
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Marcelo
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WAB_VERSION', '0.2.5');
+define('WAB_VERSION', '0.2.6');
 define('WAB_FILE', __FILE__);
 define('WAB_DIR', plugin_dir_path(__FILE__));
 require_once WAB_DIR . 'includes/core.php';
@@ -385,16 +385,6 @@ function wab_add_processed_tag($contact_id)
     }
 }
 
-function wab_payload_value(array $payload, array $keys)
-{
-    foreach ($keys as $key) {
-        if (isset($payload[$key]) && $payload[$key] !== '') {
-            return (string) $payload[$key];
-        }
-    }
-    return '';
-}
-
 function wab_apply_attribution($contact_id, $row)
 {
     $settings = wab_settings();
@@ -421,19 +411,19 @@ function wab_apply_attribution($contact_id, $row)
     $last_source = wab_core_classify_source($last ?: $first);
     $values = array(
         'first_source' => $first_source,
-        'first_medium' => wab_payload_value($first, array('utm_medium')),
-        'first_campaign' => wab_payload_value($first, array('utm_campaign', 'campaign_id')),
-        'first_content' => wab_payload_value($first, array('utm_content', 'ad_id')),
-        'first_term' => wab_payload_value($first, array('utm_term', 'utm_keyword')),
-        'first_click_id' => wab_payload_value($first, array('gclid', 'gbraid', 'wbraid', 'fbclid')),
-        'first_landing' => wab_payload_value($first, array('landing_url')),
+        'first_medium' => wab_core_payload_value($first, array('utm_medium')),
+        'first_campaign' => wab_core_payload_value($first, array('utm_campaign', 'utm_id', 'campaign_id')),
+        'first_content' => wab_core_payload_value($first, array('utm_content', 'ad_id')),
+        'first_term' => wab_core_payload_value($first, array('utm_term', 'utm_keyword')),
+        'first_click_id' => wab_core_payload_value($first, array('gclid', 'gbraid', 'wbraid', 'fbclid')),
+        'first_landing' => wab_core_payload_value($first, array('landing_url')),
         'last_source' => $last_source,
-        'last_medium' => wab_payload_value($last, array('utm_medium')),
-        'last_campaign' => wab_payload_value($last, array('utm_campaign', 'campaign_id')),
-        'last_content' => wab_payload_value($last, array('utm_content', 'ad_id')),
-        'last_term' => wab_payload_value($last, array('utm_term', 'utm_keyword')),
-        'last_click_id' => wab_payload_value($last, array('gclid', 'gbraid', 'wbraid', 'fbclid')),
-        'last_landing' => wab_payload_value($last, array('landing_url')),
+        'last_medium' => wab_core_payload_value($last, array('utm_medium')),
+        'last_campaign' => wab_core_payload_value($last, array('utm_campaign', 'utm_id', 'campaign_id')),
+        'last_content' => wab_core_payload_value($last, array('utm_content', 'ad_id')),
+        'last_term' => wab_core_payload_value($last, array('utm_term', 'utm_keyword')),
+        'last_click_id' => wab_core_payload_value($last, array('gclid', 'gbraid', 'wbraid', 'fbclid')),
+        'last_landing' => wab_core_payload_value($last, array('landing_url')),
         'confidence' => 'exact',
         'method' => 'invisible_token',
         'message_id' => $row->message_id,

@@ -1,11 +1,11 @@
-# WhatsApp Attribution Bridge 0.2.5
+# WhatsApp Attribution Bridge 0.2.6
 
 Plugin beta para ligar a origem de um clique no WordPress ao contato criado quando a mensagem chega pelo WhatsApp no GoHighLevel.
 
 ## Escopo deste MVP
 
 - Captura first-touch e last-touch no `localStorage`.
-- Captura UTMs, IDs de campanha, `gclid`, `gbraid`, `wbraid`, `fbclid` e referrer.
+- Captura os parâmetros do Campaign URL Builder do Google (`utm_id`, `utm_source`, `utm_medium`, `utm_campaign`, `utm_term`, `utm_content`), IDs de campanha, `gclid`, `gbraid`, `wbraid`, `fbclid` e referrer.
 - Cria mensagens rastreáveis no painel do WordPress.
 - Injeta duas cópias invisíveis de um token aleatório na mensagem.
 - Registra o clique com `sendBeacon()` sem bloquear a abertura do WhatsApp.
