@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WhatsApp Attribution Bridge
  * Description: Liga cliques rastreados no WhatsApp a contatos do GoHighLevel.
- * Version: 0.2.3
+ * Version: 0.2.4
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Marcelo
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WAB_VERSION', '0.2.3');
+define('WAB_VERSION', '0.2.4');
 define('WAB_FILE', __FILE__);
 define('WAB_DIR', plugin_dir_path(__FILE__));
 require_once WAB_DIR . 'includes/core.php';
@@ -703,7 +703,22 @@ function wab_admin_page()
     $settings = wab_settings();
     $messages = wab_messages();
     $metrics = $wpdb->get_results('SELECT status, COUNT(*) total FROM ' . wab_table() . ' GROUP BY status', OBJECT_K);
-    $recent_errors = $wpdb->get_results("SELECT message_id, contact_id, attempts, last_error FROM " . wab_table() . " WHERE status = 'pending' AND last_error IS NOT NULL AND last_error <> '' ORDER BY id DESC LIMIT 10");
+    $view = isset($_GET['view']) && $_GET['view'] === 'logs' ? 'logs' : 'settings';
+    $status_filter = isset($_GET['status']) ? sanitize_key($_GET['status']) : '';
+    $log_records = array();
+    if ($view === 'logs') {
+        $table = wab_table();
+        $allowed_statuses = array('pending', 'processing', 'matched');
+        if (in_array($status_filter, $allowed_statuses, true)) {
+            $log_records = $wpdb->get_results($wpdb->prepare(
+                "SELECT token, message_id, classified_source, status, contact_id, clicked_at, matched_at, attempts, last_error FROM {$table} WHERE status = %s ORDER BY id DESC LIMIT 100",
+                $status_filter
+            ));
+        } else {
+            $status_filter = '';
+            $log_records = $wpdb->get_results("SELECT token, message_id, classified_source, status, contact_id, clicked_at, matched_at, attempts, last_error FROM {$table} ORDER BY id DESC LIMIT 100");
+        }
+    }
     $map_example = array(
         'first_source' => '', 'first_campaign' => '', 'first_term' => '', 'first_click_id' => '', 'first_landing' => '',
         'last_source' => '', 'last_campaign' => '', 'last_term' => '', 'last_click_id' => '', 'last_landing' => '',
@@ -730,6 +745,47 @@ function wab_admin_page()
             <strong>Pendentes:</strong> <?php echo esc_html(isset($metrics['pending']) ? $metrics['pending']->total : 0); ?> ·
             <strong>Atribuídos:</strong> <?php echo esc_html(isset($metrics['matched']) ? $metrics['matched']->total : 0); ?></p>
 
+        <h2 class="nav-tab-wrapper">
+            <a href="<?php echo esc_url(admin_url('admin.php?page=wab')); ?>" class="nav-tab <?php echo $view === 'settings' ? 'nav-tab-active' : ''; ?>">Configuração</a>
+            <a href="<?php echo esc_url(admin_url('admin.php?page=wab&view=logs')); ?>" class="nav-tab <?php echo $view === 'logs' ? 'nav-tab-active' : ''; ?>">Registros</a>
+        </h2>
+
+        <?php if ($view === 'logs') : ?>
+            <?php
+            $status_labels = array('' => 'Todos', 'pending' => 'Pendentes', 'processing' => 'Processando', 'matched' => 'Atribuídos');
+            $filter_links = array();
+            foreach ($status_labels as $value => $label) {
+                $url = admin_url('admin.php?page=wab&view=logs' . ($value !== '' ? '&status=' . $value : ''));
+                $filter_links[] = $status_filter === $value
+                    ? '<strong>' . esc_html($label) . '</strong>'
+                    : '<a href="' . esc_url($url) . '">' . esc_html($label) . '</a>';
+            }
+            echo '<p>' . wp_kses_post(implode(' · ', $filter_links)) . '</p>';
+            ?>
+            <table class="widefat striped">
+                <thead><tr><th>Clique em</th><th>Mensagem</th><th>Origem</th><th>Status</th><th>Contato</th><th>Atribuído em</th><th>Tentativas</th><th>Último erro</th></tr></thead>
+                <tbody>
+                <?php if (!$log_records) : ?>
+                    <tr><td colspan="8">Nenhum registro encontrado.</td></tr>
+                <?php endif; ?>
+                <?php foreach ($log_records as $record) : ?>
+                    <tr>
+                        <td><?php echo esc_html($record->clicked_at); ?></td>
+                        <td><?php echo esc_html($record->message_id); ?></td>
+                        <td><?php echo esc_html($record->classified_source); ?></td>
+                        <td><?php echo esc_html($record->status); ?></td>
+                        <td><?php echo esc_html($record->contact_id ? $record->contact_id : '—'); ?></td>
+                        <td><?php echo esc_html($record->matched_at ? $record->matched_at : '—'); ?></td>
+                        <td><?php echo esc_html($record->attempts); ?></td>
+                        <td><?php echo esc_html($record->last_error ? $record->last_error : '—'); ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+            <p class="description">Mostrando os 100 mais recentes. Registros expiram automaticamente após o período de retenção configurado.</p>
+        <?php endif; ?>
+
+        <?php if ($view === 'settings') : ?>
         <h2>Configuração</h2>
         <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
             <input type="hidden" name="action" value="wab_save_settings">
@@ -750,15 +806,6 @@ function wab_admin_page()
         <h2>Workflow do HighLevel</h2>
         <p>POST para <code><?php echo esc_html(rest_url('wab/v1/match')); ?></code> com header <code>Authorization: Bearer SEGREDO</code>.</p>
         <pre>{"contact_id":"{{contact.id}}","location_id":"{{location.id}}","message":"{{message.body}}"}</pre>
-
-        <?php if ($recent_errors) : ?>
-            <h2>Retentativas pendentes</h2>
-            <table class="widefat striped"><thead><tr><th>Mensagem</th><th>Contato</th><th>Tentativas</th><th>Último erro</th></tr></thead><tbody>
-            <?php foreach ($recent_errors as $error) : ?>
-                <tr><td><?php echo esc_html($error->message_id); ?></td><td><?php echo esc_html($error->contact_id); ?></td><td><?php echo esc_html($error->attempts); ?></td><td><?php echo esc_html($error->last_error); ?></td></tr>
-            <?php endforeach; ?>
-            </tbody></table>
-        <?php endif; ?>
 
         <h2>Mensagens rastreáveis</h2>
         <table class="widefat striped"><thead><tr><th>Nome</th><th>ID</th><th>Link seguro</th><th>Shortcode</th><th></th></tr></thead><tbody>
@@ -787,6 +834,7 @@ function wab_admin_page()
             </tbody></table>
             <?php submit_button('Criar mensagem'); ?>
         </form>
+        <?php endif; ?>
     </div>
     <?php
 }
