@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WhatsApp Attribution Bridge
  * Description: Liga cliques rastreados no WhatsApp a contatos do GoHighLevel.
- * Version: 0.2.2
+ * Version: 0.2.3
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Marcelo
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WAB_VERSION', '0.2.2');
+define('WAB_VERSION', '0.2.3');
 define('WAB_FILE', __FILE__);
 define('WAB_DIR', plugin_dir_path(__FILE__));
 require_once WAB_DIR . 'includes/core.php';
@@ -534,9 +534,12 @@ function wab_match(WP_REST_Request $request)
         return new WP_Error('wab_match_payload', 'Payload excede 12 KB.', array('status' => 413));
     }
     $data = $request->get_json_params();
-    $contact_id = isset($data['contact_id']) ? sanitize_text_field($data['contact_id']) : '';
-    $location_id = isset($data['location_id']) ? sanitize_text_field($data['location_id']) : '';
-    $message = isset($data['message']) && is_string($data['message']) ? substr($data['message'], 0, 5000) : '';
+    // Alguns webhooks (ex.: HighLevel) mandam os pares "Dados personalizados" dentro de
+    // customData em vez de soltos na raiz do corpo. Aceita os dois formatos.
+    $custom = isset($data['customData']) && is_array($data['customData']) ? $data['customData'] : array();
+    $contact_id = sanitize_text_field(wab_core_body_field($data, $custom, 'contact_id'));
+    $location_id = sanitize_text_field(wab_core_body_field($data, $custom, 'location_id'));
+    $message = substr(wab_core_body_field($data, $custom, 'message'), 0, 5000);
     if (wab_rate_limited('match', 120, MINUTE_IN_SECONDS, $location_id !== '' ? $location_id : 'missing')) {
         return new WP_Error('wab_match_limit', 'Muitas requisições.', array('status' => 429));
     }

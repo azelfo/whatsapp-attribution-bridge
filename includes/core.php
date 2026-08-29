@@ -80,6 +80,17 @@ function wab_core_classify_source(array $payload)
     return 'referral';
 }
 
+function wab_core_body_field(array $data, array $custom, $key)
+{
+    if (isset($custom[$key]) && is_scalar($custom[$key])) {
+        return (string) $custom[$key];
+    }
+    if (isset($data[$key]) && is_scalar($data[$key])) {
+        return (string) $data[$key];
+    }
+    return '';
+}
+
 function wab_core_contact_fields(array $contact)
 {
     $fields = array();

@@ -32,4 +32,9 @@ wab_assert($fields['a']['recognized'] && !$fields['a']['filled'], 'Campo reconhe
 wab_assert($fields['b']['filled'] && $fields['c']['filled'] && $fields['d']['filled'], 'Formatos conhecidos preenchidos devem ser preservados.');
 wab_assert(!$fields['e']['recognized'] && $fields['e']['filled'], 'Formato desconhecido deve falhar fechado e preservar first-touch.');
 
+wab_assert(wab_core_body_field(array(), array('location_id' => 'AQx123'), 'location_id') === 'AQx123', 'Deve ler de customData quando presente.');
+wab_assert(wab_core_body_field(array('location_id' => 'raiz'), array(), 'location_id') === 'raiz', 'Deve cair para a raiz quando customData não tem a chave.');
+wab_assert(wab_core_body_field(array('location_id' => 'raiz'), array('location_id' => 'custom'), 'location_id') === 'custom', 'customData tem prioridade sobre a raiz.');
+wab_assert(wab_core_body_field(array(), array(), 'location_id') === '', 'Ausente nos dois deve retornar vazio.');
+
 echo "core-test.php: ok\n";
