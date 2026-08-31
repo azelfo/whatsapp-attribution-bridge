@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WhatsApp Attribution Bridge
  * Description: Liga cliques rastreados no WhatsApp a contatos do GoHighLevel.
- * Version: 0.2.9
+ * Version: 0.3.0
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Marcelo
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WAB_VERSION', '0.2.9');
+define('WAB_VERSION', '0.3.0');
 define('WAB_FILE', __FILE__);
 define('WAB_DIR', plugin_dir_path(__FILE__));
 require_once WAB_DIR . 'includes/core.php';
@@ -734,10 +734,14 @@ function wab_delete_record()
         wp_die('Sem permissão.');
     }
     check_admin_referer('wab_delete_record');
-    $id = isset($_POST['record_id']) ? absint($_POST['record_id']) : 0;
-    if ($id) {
-        $wpdb->delete(wab_table(), array('id' => $id), array('%d'));
+    $ids = isset($_POST['record_ids']) ? (array) $_POST['record_ids'] : array();
+    $ids = array_filter(array_map('absint', $ids));
+    if (!$ids) {
+        wab_admin_redirect('nothing_selected', 'logs');
     }
+    $table = wab_table();
+    $placeholders = implode(',', array_fill(0, count($ids), '%d'));
+    $wpdb->query($wpdb->prepare("DELETE FROM {$table} WHERE id IN ({$placeholders})", $ids));
     wab_admin_redirect('record_deleted', 'logs');
 }
 add_action('admin_post_wab_delete_record', 'wab_delete_record');
@@ -913,7 +917,8 @@ function wab_admin_page()
             'invalid_map' => array('error', 'O mapa de campos precisa ser um objeto JSON com valores de texto.'),
             'invalid_message' => array('error', 'Preencha nome, número válido e mensagem.'),
             'conn_tested' => array('success', 'Teste de conexão concluído — resultado ao lado do botão.'),
-            'record_deleted' => array('success', 'Registro excluído.'),
+            'record_deleted' => array('success', 'Registros excluídos.'),
+            'nothing_selected' => array('error', 'Nenhum registro selecionado.'),
             'records_cleared' => array('success', 'Histórico limpo.'),
             'webhooks_cleared' => array('success', 'Log de webhooks limpo.'),
         );
@@ -971,14 +976,21 @@ function wab_admin_page()
             }
             echo '<p>' . wp_kses_post(implode(' · ', $filter_links)) . '</p>';
             ?>
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return confirm('Excluir os registros selecionados? Esta ação não pode ser desfeita.');">
+            <?php wp_nonce_field('wab_delete_record'); ?>
+            <input type="hidden" name="action" value="wab_delete_record">
             <table class="widefat striped">
-                <thead><tr><th>Clique em</th><th>Mensagem</th><th>Origem</th><th>Status</th><th>Contato</th><th>Atribuído em</th><th>Tentativas</th><th>Último erro</th><th></th></tr></thead>
+                <thead><tr>
+                    <td class="check-column"><input type="checkbox" title="Selecionar todos" onclick="this.closest('table').querySelectorAll('.wab-cb').forEach(function(c){c.checked=this.checked}, this)"></td>
+                    <th>Clique em</th><th>Mensagem</th><th>Origem</th><th>Status</th><th>Contato</th><th>Atribuído em</th><th>Tentativas</th><th>Último erro</th>
+                </tr></thead>
                 <tbody>
                 <?php if (!$log_records) : ?>
                     <tr><td colspan="9">Nenhum registro encontrado.</td></tr>
                 <?php endif; ?>
                 <?php foreach ($log_records as $record) : ?>
                     <tr>
+                        <th scope="row" class="check-column"><input type="checkbox" class="wab-cb" name="record_ids[]" value="<?php echo esc_attr($record->id); ?>"></th>
                         <td><?php echo esc_html(wab_local_time($record->clicked_at)); ?></td>
                         <td><?php echo esc_html($record->message_id); ?></td>
                         <td><?php echo esc_html($record->classified_source); ?></td>
@@ -987,14 +999,6 @@ function wab_admin_page()
                         <td><?php echo esc_html(wab_local_time($record->matched_at)); ?></td>
                         <td><?php echo esc_html($record->attempts); ?></td>
                         <td><?php echo esc_html($record->last_error ? $record->last_error : '—'); ?></td>
-                        <td>
-                            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return confirm('Excluir este registro?');">
-                                <?php wp_nonce_field('wab_delete_record'); ?>
-                                <input type="hidden" name="action" value="wab_delete_record">
-                                <input type="hidden" name="record_id" value="<?php echo esc_attr($record->id); ?>">
-                                <?php submit_button('Excluir', 'delete small', 'submit', false); ?>
-                            </form>
-                        </td>
                     </tr>
                     <tr>
                         <td colspan="9" style="padding-top:0">
@@ -1010,6 +1014,10 @@ function wab_admin_page()
                 <?php endforeach; ?>
                 </tbody>
             </table>
+            <?php if ($log_records) : ?>
+                <p><?php submit_button('Excluir selecionados', 'delete', 'submit', false); ?></p>
+            <?php endif; ?>
+            </form>
             <p class="description">Mostrando os 100 mais recentes. Registros expiram automaticamente após o período de retenção configurado.</p>
 
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return confirm('Apagar os registros selecionados? Esta ação não pode ser desfeita.');">
