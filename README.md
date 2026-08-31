@@ -1,4 +1,4 @@
-# WhatsApp Attribution Bridge 0.3.1
+# WhatsApp Attribution Bridge 0.3.2
 
 Plugin beta para ligar a origem de um clique no WordPress ao contato criado quando a mensagem chega pelo WhatsApp no GoHighLevel.
 
@@ -73,6 +73,8 @@ Customer Replied
 Reply Channel = WhatsApp
 Contato não possui a tag wab-attribution-processed
 ```
+
+O plugin lê os dados do payload padrão do HighLevel (`contact_id`, `location.id`, `message.body`), então **não é obrigatório configurar "Dados personalizados" na ação Webhook**. Se eles existirem, têm prioridade.
 
 Adicione uma espera de 3 segundos e depois um webhook `POST` para a URL mostrada no painel do plugin. Para cobrir a rara corrida em que a mensagem chega antes do `sendBeacon()`, adicione uma espera de mais 5 segundos e repita o mesmo webhook. A segunda chamada é segura e não reprocessa uma atribuição concluída.
 

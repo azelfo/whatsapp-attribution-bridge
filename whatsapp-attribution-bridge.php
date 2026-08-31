@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WhatsApp Attribution Bridge
  * Description: Liga cliques rastreados no WhatsApp a contatos do GoHighLevel.
- * Version: 0.3.1
+ * Version: 0.3.2
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Marcelo
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WAB_VERSION', '0.3.1');
+define('WAB_VERSION', '0.3.2');
 define('WAB_FILE', __FILE__);
 define('WAB_DIR', plugin_dir_path(__FILE__));
 require_once WAB_DIR . 'includes/core.php';
@@ -548,11 +548,11 @@ function wab_match(WP_REST_Request $request)
     // Registra o que o plugin conseguiu LER do payload — sem isso, um campo que
     // chega no formato errado (message como objeto em vez de texto, por exemplo)
     // some em silencio e o log so mostra "no_token" sem dizer por que.
-    $msg = wab_core_body_field($body, $custom, 'message');
+    $msg = wab_core_body_field($body, $custom, 'message', array('message.body'));
     $lido = array(
         'tem_customData' => $custom ? 'sim' : 'NAO',
-        'contact_id' => wab_core_body_field($body, $custom, 'contact_id'),
-        'location_id' => wab_core_body_field($body, $custom, 'location_id'),
+        'contact_id' => wab_core_body_field($body, $custom, 'contact_id', array('contact.id')),
+        'location_id' => wab_core_body_field($body, $custom, 'location_id', array('location.id')),
         'message_chars' => strlen($msg),
         'invisiveis_na_message' => preg_match_all('/[\x{200B}\x{200C}]/u', $msg),
         'tokens_encontrados' => count(wab_core_decode_tokens($msg)),
@@ -561,7 +561,7 @@ function wab_match(WP_REST_Request $request)
     wab_log_webhook(
         wab_core_log_reason($error_code, $data),
         $request->get_body(),
-        wab_core_body_field($body, $custom, 'contact_id'),
+        wab_core_body_field($body, $custom, 'contact_id', array('contact.id')),
         $lido
     );
 
@@ -584,9 +584,9 @@ function wab_match_run(WP_REST_Request $request)
     // Alguns webhooks (ex.: HighLevel) mandam os pares "Dados personalizados" dentro de
     // customData em vez de soltos na raiz do corpo. Aceita os dois formatos.
     $custom = isset($data['customData']) && is_array($data['customData']) ? $data['customData'] : array();
-    $contact_id = sanitize_text_field(wab_core_body_field($data, $custom, 'contact_id'));
-    $location_id = sanitize_text_field(wab_core_body_field($data, $custom, 'location_id'));
-    $message = substr(wab_core_body_field($data, $custom, 'message'), 0, 5000);
+    $contact_id = sanitize_text_field(wab_core_body_field($data, $custom, 'contact_id', array('contact.id')));
+    $location_id = sanitize_text_field(wab_core_body_field($data, $custom, 'location_id', array('location.id')));
+    $message = substr(wab_core_body_field($data, $custom, 'message', array('message.body')), 0, 5000);
     if (wab_rate_limited('match', 120, MINUTE_IN_SECONDS, $location_id !== '' ? $location_id : 'missing')) {
         return new WP_Error('wab_match_limit', 'Muitas requisições.', array('status' => 429));
     }

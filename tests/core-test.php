@@ -42,6 +42,22 @@ wab_assert(wab_core_log_reason('', array('matched' => false, 'reason' => 'no_tok
 wab_assert(wab_core_log_reason('', array('matched' => true, 'confidence' => 'exact')) === 'matched', 'Sucesso sem reason deve logar matched.');
 wab_assert(wab_core_log_reason('', array()) === 'unknown', 'Sem codigo e sem dados deve logar unknown.');
 
+// Payload nativo do HighLevel: sem customData, message vem como objeto e a
+// location aninhada. O plugin precisa funcionar assim tambem.
+$nativo = array(
+    'contact_id' => 'qjyVJhs2szA8niA3AGqt',
+    'message' => array('type' => 20, 'body' => 'texto com token'),
+    'location' => array('id' => 'AQxc7RBeQjaGHX2lA6wO'),
+);
+wab_assert(wab_core_body_field($nativo, array(), 'message', array('message.body')) === 'texto com token', 'Deve ler message.body quando message e objeto.');
+wab_assert(wab_core_body_field($nativo, array(), 'location_id', array('location.id')) === 'AQxc7RBeQjaGHX2lA6wO', 'Deve ler location.id aninhado.');
+wab_assert(wab_core_body_field($nativo, array(), 'contact_id', array('contact.id')) === 'qjyVJhs2szA8niA3AGqt', 'contact_id na raiz continua tendo prioridade.');
+wab_assert(wab_core_body_field($nativo, array('message' => 'do customData'), 'message', array('message.body')) === 'do customData', 'customData tem prioridade sobre o caminho nativo.');
+wab_assert(wab_core_dig($nativo, 'message.body') === 'texto com token', 'dig resolve caminho de dois niveis.');
+wab_assert(wab_core_dig($nativo, 'message') === '', 'dig devolve vazio quando o no final nao e escalar.');
+wab_assert(wab_core_dig($nativo, 'nao.existe') === '', 'dig devolve vazio para caminho inexistente.');
+wab_assert(wab_core_body_field(array(), array(), 'message', array('message.body')) === '', 'Payload vazio devolve vazio, sem erro.');
+
 $campaign_keys = array('utm_campaign', 'utm_id', 'campaign_id');
 wab_assert(wab_core_payload_value(array('utm_campaign' => 'nome', 'utm_id' => '123'), $campaign_keys) === 'nome', 'utm_campaign tem precedencia sobre utm_id.');
 wab_assert(wab_core_payload_value(array('utm_id' => '123', 'campaign_id' => '999'), $campaign_keys) === '123', 'utm_id (padrao GA4) vem antes do campaign_id legado.');

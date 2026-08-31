@@ -101,13 +101,36 @@ function wab_core_log_reason($error_code, array $data)
     return !empty($data['matched']) ? 'matched' : 'unknown';
 }
 
-function wab_core_body_field(array $data, array $custom, $key)
+// Busca um valor por caminho aninhado ("message.body"), devolvendo '' se em
+// qualquer nivel faltar a chave ou o valor final nao for escalar.
+function wab_core_dig(array $data, $path)
+{
+    $node = $data;
+    foreach (explode('.', $path) as $part) {
+        if (!is_array($node) || !isset($node[$part])) {
+            return '';
+        }
+        $node = $node[$part];
+    }
+    return is_scalar($node) ? (string) $node : '';
+}
+
+// Ordem de busca: customData (campos personalizados do workflow) -> raiz ->
+// caminhos nativos do payload do HighLevel. O terceiro nivel faz o plugin
+// funcionar mesmo sem nenhum campo personalizado configurado na acao Webhook.
+function wab_core_body_field(array $data, array $custom, $key, array $fallbacks = array())
 {
     if (isset($custom[$key]) && is_scalar($custom[$key])) {
         return (string) $custom[$key];
     }
     if (isset($data[$key]) && is_scalar($data[$key])) {
         return (string) $data[$key];
+    }
+    foreach ($fallbacks as $path) {
+        $valor = wab_core_dig($data, $path);
+        if ($valor !== '') {
+            return $valor;
+        }
     }
     return '';
 }
