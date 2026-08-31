@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WhatsApp Attribution Bridge
  * Description: Liga cliques rastreados no WhatsApp a contatos do GoHighLevel.
- * Version: 0.2.6
+ * Version: 0.2.7
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Marcelo
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WAB_VERSION', '0.2.6');
+define('WAB_VERSION', '0.2.7');
 define('WAB_FILE', __FILE__);
 define('WAB_DIR', plugin_dir_path(__FILE__));
 require_once WAB_DIR . 'includes/core.php';
@@ -203,7 +203,9 @@ function wab_enqueue_tracker()
         return;
     }
 
-    wp_enqueue_script('wab-tracker', plugins_url('assets/tracker.js', __FILE__), array(), WAB_VERSION, true);
+    // No <head>, nao no rodape: o botao aparece na primeira tela muito antes do fim
+    // da pagina carregar, e um clique nessa janela abriria o WhatsApp sem token.
+    wp_enqueue_script('wab-tracker', plugins_url('assets/tracker.js', __FILE__), array(), WAB_VERSION, false);
     wp_localize_script('wab-tracker', 'WAB_CONFIG', array(
         'endpoint' => rest_url('wab/v1/click'),
         'messages' => $public_messages,
@@ -639,9 +641,13 @@ function wab_admin_menu()
 }
 add_action('admin_menu', 'wab_admin_menu');
 
-function wab_admin_redirect($notice)
+function wab_admin_redirect($notice, $view = '')
 {
-    wp_safe_redirect(add_query_arg(array('page' => 'wab', 'wab_notice' => $notice), admin_url('admin.php')));
+    $args = array('page' => 'wab', 'wab_notice' => $notice);
+    if ($view !== '') {
+        $args['view'] = $view;
+    }
+    wp_safe_redirect(add_query_arg($args, admin_url('admin.php')));
     exit;
 }
 
@@ -720,6 +726,50 @@ function wab_delete_message()
     wab_admin_redirect('message_deleted');
 }
 add_action('admin_post_wab_delete_message', 'wab_delete_message');
+
+function wab_delete_record()
+{
+    global $wpdb;
+    if (!current_user_can('manage_options')) {
+        wp_die('Sem permissão.');
+    }
+    check_admin_referer('wab_delete_record');
+    $id = isset($_POST['record_id']) ? absint($_POST['record_id']) : 0;
+    if ($id) {
+        $wpdb->delete(wab_table(), array('id' => $id), array('%d'));
+    }
+    wab_admin_redirect('record_deleted', 'logs');
+}
+add_action('admin_post_wab_delete_record', 'wab_delete_record');
+
+function wab_clear_records()
+{
+    global $wpdb;
+    if (!current_user_can('manage_options')) {
+        wp_die('Sem permissão.');
+    }
+    check_admin_referer('wab_clear_records');
+    $scope = isset($_POST['scope']) ? sanitize_key($_POST['scope']) : 'all';
+    $table = wab_table();
+    if (in_array($scope, array('pending', 'processing', 'matched'), true)) {
+        $wpdb->query($wpdb->prepare("DELETE FROM {$table} WHERE status = %s", $scope));
+    } else {
+        $wpdb->query("DELETE FROM {$table}");
+    }
+    wab_admin_redirect('records_cleared', 'logs');
+}
+add_action('admin_post_wab_clear_records', 'wab_clear_records');
+
+function wab_clear_webhook_log()
+{
+    if (!current_user_can('manage_options')) {
+        wp_die('Sem permissão.');
+    }
+    check_admin_referer('wab_clear_webhook_log');
+    delete_option('wab_webhook_log');
+    wab_admin_redirect('webhooks_cleared', 'webhooks');
+}
+add_action('admin_post_wab_clear_webhook_log', 'wab_clear_webhook_log');
 
 function wab_test_connection()
 {
@@ -814,12 +864,12 @@ function wab_admin_page()
         $allowed_statuses = array('pending', 'processing', 'matched');
         if (in_array($status_filter, $allowed_statuses, true)) {
             $log_records = $wpdb->get_results($wpdb->prepare(
-                "SELECT token, message_id, classified_source, status, contact_id, clicked_at, matched_at, attempts, last_error FROM {$table} WHERE status = %s ORDER BY id DESC LIMIT 100",
+                "SELECT id, token, message_id, classified_source, status, contact_id, clicked_at, matched_at, attempts, last_error FROM {$table} WHERE status = %s ORDER BY id DESC LIMIT 100",
                 $status_filter
             ));
         } else {
             $status_filter = '';
-            $log_records = $wpdb->get_results("SELECT token, message_id, classified_source, status, contact_id, clicked_at, matched_at, attempts, last_error FROM {$table} ORDER BY id DESC LIMIT 100");
+            $log_records = $wpdb->get_results("SELECT id, token, message_id, classified_source, status, contact_id, clicked_at, matched_at, attempts, last_error FROM {$table} ORDER BY id DESC LIMIT 100");
         }
     }
     $map_example = array(
@@ -840,6 +890,9 @@ function wab_admin_page()
             'invalid_map' => array('error', 'O mapa de campos precisa ser um objeto JSON com valores de texto.'),
             'invalid_message' => array('error', 'Preencha nome, número válido e mensagem.'),
             'conn_tested' => array('success', 'Teste de conexão concluído — resultado ao lado do botão.'),
+            'record_deleted' => array('success', 'Registro excluído.'),
+            'records_cleared' => array('success', 'Histórico limpo.'),
+            'webhooks_cleared' => array('success', 'Log de webhooks limpo.'),
         );
         if (isset($notices[$notice_key])) : ?>
             <div class="notice notice-<?php echo esc_attr($notices[$notice_key][0]); ?> is-dismissible"><p><?php echo esc_html($notices[$notice_key][1]); ?></p></div>
@@ -874,6 +927,13 @@ function wab_admin_page()
                 <?php endforeach; ?>
                 </tbody>
             </table>
+            <?php if ($webhook_log) : ?>
+                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return confirm('Apagar o log de webhooks?');">
+                    <?php wp_nonce_field('wab_clear_webhook_log'); ?>
+                    <input type="hidden" name="action" value="wab_clear_webhook_log">
+                    <?php submit_button('Limpar log de webhooks', 'delete', 'submit', false); ?>
+                </form>
+            <?php endif; ?>
         <?php endif; ?>
 
         <?php if ($view === 'logs') : ?>
@@ -889,10 +949,10 @@ function wab_admin_page()
             echo '<p>' . wp_kses_post(implode(' · ', $filter_links)) . '</p>';
             ?>
             <table class="widefat striped">
-                <thead><tr><th>Clique em</th><th>Mensagem</th><th>Origem</th><th>Status</th><th>Contato</th><th>Atribuído em</th><th>Tentativas</th><th>Último erro</th></tr></thead>
+                <thead><tr><th>Clique em</th><th>Mensagem</th><th>Origem</th><th>Status</th><th>Contato</th><th>Atribuído em</th><th>Tentativas</th><th>Último erro</th><th></th></tr></thead>
                 <tbody>
                 <?php if (!$log_records) : ?>
-                    <tr><td colspan="8">Nenhum registro encontrado.</td></tr>
+                    <tr><td colspan="9">Nenhum registro encontrado.</td></tr>
                 <?php endif; ?>
                 <?php foreach ($log_records as $record) : ?>
                     <tr>
@@ -904,11 +964,32 @@ function wab_admin_page()
                         <td><?php echo esc_html(wab_local_time($record->matched_at)); ?></td>
                         <td><?php echo esc_html($record->attempts); ?></td>
                         <td><?php echo esc_html($record->last_error ? $record->last_error : '—'); ?></td>
+                        <td>
+                            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return confirm('Excluir este registro?');">
+                                <?php wp_nonce_field('wab_delete_record'); ?>
+                                <input type="hidden" name="action" value="wab_delete_record">
+                                <input type="hidden" name="record_id" value="<?php echo esc_attr($record->id); ?>">
+                                <?php submit_button('Excluir', 'delete small', 'submit', false); ?>
+                            </form>
+                        </td>
                     </tr>
                 <?php endforeach; ?>
                 </tbody>
             </table>
             <p class="description">Mostrando os 100 mais recentes. Registros expiram automaticamente após o período de retenção configurado.</p>
+
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return confirm('Apagar os registros selecionados? Esta ação não pode ser desfeita.');">
+                <?php wp_nonce_field('wab_clear_records'); ?>
+                <input type="hidden" name="action" value="wab_clear_records">
+                <select name="scope">
+                    <option value="all">Todo o histórico</option>
+                    <option value="pending">Somente pendentes</option>
+                    <option value="processing">Somente em processamento</option>
+                    <option value="matched">Somente atribuídos</option>
+                </select>
+                <?php submit_button('Limpar histórico', 'delete', 'submit', false); ?>
+                <p class="description">Apaga apenas o histórico local de cliques. Não altera nada no HighLevel — contatos e campos já atribuídos permanecem intactos.</p>
+            </form>
         <?php endif; ?>
 
         <?php if ($view === 'settings') : ?>

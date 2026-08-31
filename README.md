@@ -1,4 +1,4 @@
-# WhatsApp Attribution Bridge 0.2.6
+# WhatsApp Attribution Bridge 0.2.7
 
 Plugin beta para ligar a origem de um clique no WordPress ao contato criado quando a mensagem chega pelo WhatsApp no GoHighLevel.
 
@@ -8,12 +8,13 @@ Plugin beta para ligar a origem de um clique no WordPress ao contato criado quan
 - Captura os parâmetros do Campaign URL Builder do Google (`utm_id`, `utm_source`, `utm_medium`, `utm_campaign`, `utm_term`, `utm_content`), IDs de campanha, `gclid`, `gbraid`, `wbraid`, `fbclid` e referrer.
 - Cria mensagens rastreáveis no painel do WordPress.
 - Injeta duas cópias invisíveis de um token aleatório na mensagem.
+- Carrega o tracker no `<head>` para preparar os links antes de o visitante conseguir clicar.
 - Registra o clique com `sendBeacon()` sem bloquear a abertura do WhatsApp.
 - Preserva first-touch já preenchido no contato e atualiza last-touch.
 - Atualiza o contato usando a API de Contatos v3 e adiciona uma tag após a atribuição.
 - Repete automaticamente integrações pendentes após falhas transitórias do HighLevel.
-- Aba "Registros" no painel mostra os últimos 100 cliques/atribuições direto da tabela, com filtro por status.
-- Aba "Webhooks" registra toda chamada recebida em `/wab/v1/match`, inclusive as recusadas, com o corpo cru e o motivo.
+- Aba "Registros" no painel mostra os últimos 100 cliques/atribuições direto da tabela, com filtro por status, exclusão individual e limpeza por status.
+- Aba "Webhooks" registra toda chamada recebida em `/wab/v1/match`, inclusive as recusadas, com o corpo cru e o motivo. O log pode ser limpo pelo painel.
 - Painel de diagnóstico com checagens de configuração e botão "Testar conexão com o HighLevel".
 - Falha de forma aberta: sem JavaScript, o link continua abrindo o WhatsApp com a mensagem visível.
 - Não solicita diretamente nome, telefone ou conteúdo da conversa. URLs são gravadas sem query string ou fragmento; UTMs e IDs permitidos ficam em campos separados. As landing pages não devem colocar dados pessoais no caminho da URL.
