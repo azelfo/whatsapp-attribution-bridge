@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WhatsApp Attribution Bridge
  * Description: Liga cliques rastreados no WhatsApp a contatos do GoHighLevel.
- * Version: 0.2.8
+ * Version: 0.2.9
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Marcelo
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WAB_VERSION', '0.2.8');
+define('WAB_VERSION', '0.2.9');
 define('WAB_FILE', __FILE__);
 define('WAB_DIR', plugin_dir_path(__FILE__));
 require_once WAB_DIR . 'includes/core.php';
@@ -837,6 +837,29 @@ function wab_local_time($mysql_utc)
         : $when;
 }
 
+// Mostra o que o navegador capturou (UTMs, click IDs, landing) daquele clique.
+function wab_payload_summary($first_json, $last_json)
+{
+    $first = (array) json_decode((string) $first_json, true);
+    $last = (array) json_decode((string) $last_json, true);
+    $linhas = array();
+    foreach (array('Last (visita do clique)' => $last, 'First (primeira visita)' => $first) as $rotulo => $dados) {
+        if (!$dados) {
+            $linhas[] = '<strong>' . esc_html($rotulo) . ':</strong> <em>vazio</em>';
+            continue;
+        }
+        $partes = array();
+        foreach ($dados as $chave => $valor) {
+            if ($chave === 'captured_at' || !is_scalar($valor) || $valor === '') {
+                continue;
+            }
+            $partes[] = '<code>' . esc_html($chave) . '=' . esc_html((string) $valor) . '</code>';
+        }
+        $linhas[] = '<strong>' . esc_html($rotulo) . ':</strong> ' . ($partes ? implode(' ', $partes) : '<em>sem parâmetros</em>');
+    }
+    return implode('<br>', $linhas);
+}
+
 function wab_status_badge($status)
 {
     $green = array('matched', 'ok');
@@ -864,12 +887,12 @@ function wab_admin_page()
         $allowed_statuses = array('pending', 'processing', 'matched');
         if (in_array($status_filter, $allowed_statuses, true)) {
             $log_records = $wpdb->get_results($wpdb->prepare(
-                "SELECT id, token, message_id, classified_source, status, contact_id, clicked_at, matched_at, attempts, last_error FROM {$table} WHERE status = %s ORDER BY id DESC LIMIT 100",
+                "SELECT id, token, message_id, classified_source, status, contact_id, clicked_at, matched_at, attempts, last_error, first_payload, last_payload FROM {$table} WHERE status = %s ORDER BY id DESC LIMIT 100",
                 $status_filter
             ));
         } else {
             $status_filter = '';
-            $log_records = $wpdb->get_results("SELECT id, token, message_id, classified_source, status, contact_id, clicked_at, matched_at, attempts, last_error FROM {$table} ORDER BY id DESC LIMIT 100");
+            $log_records = $wpdb->get_results("SELECT id, token, message_id, classified_source, status, contact_id, clicked_at, matched_at, attempts, last_error, first_payload, last_payload FROM {$table} ORDER BY id DESC LIMIT 100");
         }
     }
     $map_example = array(
@@ -971,6 +994,17 @@ function wab_admin_page()
                                 <input type="hidden" name="record_id" value="<?php echo esc_attr($record->id); ?>">
                                 <?php submit_button('Excluir', 'delete small', 'submit', false); ?>
                             </form>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td colspan="9" style="padding-top:0">
+                            <details>
+                                <summary style="cursor:pointer;color:#2271b1">Ver dados capturados (UTMs, click ID, landing)</summary>
+                                <div style="padding:8px 0 4px 14px;line-height:1.9">
+                                    <?php echo wp_kses_post(wab_payload_summary($record->first_payload, $record->last_payload)); ?>
+                                    <br><strong>Token:</strong> <code><?php echo esc_html($record->token); ?></code>
+                                </div>
+                            </details>
                         </td>
                     </tr>
                 <?php endforeach; ?>

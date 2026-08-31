@@ -1,4 +1,4 @@
-# WhatsApp Attribution Bridge 0.2.8
+# WhatsApp Attribution Bridge 0.2.9
 
 Plugin beta para ligar a origem de um clique no WordPress ao contato criado quando a mensagem chega pelo WhatsApp no GoHighLevel.
 
@@ -13,7 +13,7 @@ Plugin beta para ligar a origem de um clique no WordPress ao contato criado quan
 - Preserva first-touch já preenchido no contato e atualiza last-touch.
 - Atualiza o contato usando a API de Contatos v3 e adiciona uma tag após a atribuição.
 - Repete automaticamente integrações pendentes após falhas transitórias do HighLevel.
-- Aba "Registros" no painel mostra os últimos 100 cliques/atribuições direto da tabela, com filtro por status, exclusão individual e limpeza por status.
+- Aba "Registros" no painel mostra os últimos 100 cliques/atribuições direto da tabela, com filtro por status, exclusão individual, limpeza por status e detalhe dos UTMs/click IDs capturados em cada clique.
 - Aba "Webhooks" registra toda chamada recebida em `/wab/v1/match`, inclusive as recusadas, com o corpo cru e o motivo. O log pode ser limpo pelo painel.
 - Painel de diagnóstico com checagens de configuração e botão "Testar conexão com o HighLevel".
 - Falha de forma aberta: sem JavaScript, o link continua abrindo o WhatsApp com a mensagem visível.
