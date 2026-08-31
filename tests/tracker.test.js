@@ -18,6 +18,7 @@ const context = {
   window: {
     WAB_CONFIG: {
       endpoint: 'https://clinica.test/wp-json/wab/v1/click',
+      ttlDays: 90,
       messages: {
         agendamento: { phone: '5571999999999', message: 'Olá! Gostaria de agendar.' }
       }
@@ -132,5 +133,27 @@ assert.ok(headHandlers.pointerdown, 'listeners de clique entram imediatamente, s
 domReadyCallback();
 assert.equal(headLink.dataset.wabPrepared, '1', 'apos DOMContentLoaded o link precisa estar preparado');
 assert.match(new URL(headLink.href).searchParams.get('text'), /^[​‌]{48}.+[​‌]{48}$/u);
+
+const expiredStorage = new Map([
+  ['wab_first_attribution', JSON.stringify({ utm_source: 'antiga', captured_at: '2020-01-01T00:00:00.000Z' })],
+  ['wab_last_attribution', JSON.stringify({ utm_source: 'antiga', captured_at: '2020-01-01T00:00:00.000Z' })]
+]);
+const expiredContext = {
+  window: context.window,
+  location: context.location,
+  document: {
+    readyState: 'complete', referrer: '',
+    querySelectorAll() { return []; }, addEventListener() {}
+  },
+  localStorage: {
+    getItem(key) { return expiredStorage.get(key) || null; },
+    setItem(key, value) { expiredStorage.set(key, value); },
+    removeItem(key) { expiredStorage.delete(key); }
+  },
+  navigator: {}, crypto: webcrypto, URL, URLSearchParams, Blob, fetch: async () => ({ ok: true }), console
+};
+vm.createContext(expiredContext);
+vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '..', 'assets', 'tracker.js'), 'utf8'), expiredContext);
+assert.equal(JSON.parse(expiredStorage.get('wab_first_attribution')).utm_source, 'adwords', 'first-touch vencido deve ser substituido');
 
 console.log('tracker.test.js: ok');

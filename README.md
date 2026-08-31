@@ -1,11 +1,11 @@
-# WhatsApp Attribution Bridge 0.3.3
+# WhatsApp Attribution Bridge 0.3.4
 
 Plugin beta para ligar a origem de um clique no WordPress ao contato criado quando a mensagem chega pelo WhatsApp no GoHighLevel.
 
 ## Escopo deste MVP
 
-- Captura first-touch e last-touch no `localStorage`.
-- Captura os parâmetros do Campaign URL Builder do Google (`utm_id`, `utm_source`, `utm_medium`, `utm_campaign`, `utm_term`, `utm_content`), IDs de campanha, `gclid`, `gbraid`, `wbraid`, `fbclid` e referrer.
+- Captura first-touch e last-touch no `localStorage`, com validade configurável.
+- Captura os parâmetros do Campaign URL Builder do Google (`utm_id`, `utm_source`, `utm_medium`, `utm_campaign`, `utm_term`, `utm_content`), IDs de campanha, `gclid`, `gbraid`, `wbraid`, `fbclid`, `msclkid` e referrer.
 - Cria mensagens rastreáveis no painel do WordPress.
 - Injeta duas cópias invisíveis de um token aleatório na mensagem.
 - Carrega o tracker no `<head>` para preparar os links antes de o visitante conseguir clicar.
@@ -14,7 +14,7 @@ Plugin beta para ligar a origem de um clique no WordPress ao contato criado quan
 - Atualiza o contato usando a API de Contatos v3 e adiciona uma tag após a atribuição.
 - Repete automaticamente integrações pendentes após falhas transitórias do HighLevel.
 - Aba "Registros" no painel mostra os últimos 100 cliques/atribuições direto da tabela, com filtro por status, seleção múltipla com "selecionar todos", limpeza por status e detalhe dos UTMs/click IDs capturados em cada clique.
-- Aba "Webhooks" registra toda chamada recebida em `/wab/v1/match`, inclusive as recusadas, com o corpo cru, o motivo e o que o plugin conseguiu ler. Permite reprocessar um webhook do log ou colar um payload para testar.
+- Aba "Webhooks" registra somente o diagnóstico derivado das chamadas recebidas em `/wab/v1/match`, sem persistir corpo bruto, IP ou dados do paciente. Permite colar um payload para teste sem armazená-lo.
 - Painel de diagnóstico com checagens de configuração e botão "Testar conexão com o HighLevel".
 - Falha de forma aberta: sem JavaScript, o link continua abrindo o WhatsApp com a mensagem visível.
 - Não solicita diretamente nome, telefone ou conteúdo da conversa. URLs são gravadas sem query string ou fragmento; UTMs e IDs permitidos ficam em campos separados. As landing pages não devem colocar dados pessoais no caminho da URL.
@@ -74,9 +74,9 @@ Reply Channel = WhatsApp
 Contato não possui a tag wab-attribution-processed
 ```
 
-O plugin lê os dados do payload padrão do HighLevel (`contact_id`, `location.id`, `message.body`), então **não é obrigatório configurar "Dados personalizados" na ação Webhook**. Se eles existirem, têm prioridade.
+O plugin aceita tanto o payload de evento do HighLevel (`contactId`, `locationId`, `body`) quanto os formatos do workflow (`contact_id`, `location.id`, `message.body`). Se "Dados personalizados" existirem, eles têm prioridade.
 
-Adicione uma espera de 3 segundos e depois um webhook `POST` para a URL mostrada no painel do plugin. Para cobrir a rara corrida em que a mensagem chega antes do `sendBeacon()`, adicione uma espera de mais 5 segundos e repita o mesmo webhook. A segunda chamada é segura e não reprocessa uma atribuição concluída.
+Adicione um webhook `POST` para a URL mostrada no painel do plugin. Se a mensagem chegar antes do registro do clique, o plugin guarda a associação por dez minutos e conclui a atribuição assim que o clique aparece. Repetir o webhook continua sendo seguro e idempotente.
 
 Header:
 
@@ -107,11 +107,13 @@ Crie campos de texto no contato do HighLevel e associe seus IDs às chaves abaix
   "first_campaign": "ID_DO_CAMPO",
   "first_term": "ID_DO_CAMPO",
   "first_click_id": "ID_DO_CAMPO",
+  "first_ad_group": "ID_DO_CAMPO",
   "first_landing": "ID_DO_CAMPO",
   "last_source": "ID_DO_CAMPO",
   "last_campaign": "ID_DO_CAMPO",
   "last_term": "ID_DO_CAMPO",
   "last_click_id": "ID_DO_CAMPO",
+  "last_ad_group": "ID_DO_CAMPO",
   "last_landing": "ID_DO_CAMPO",
   "confidence": "ID_DO_CAMPO",
   "method": "ID_DO_CAMPO",
@@ -157,15 +159,22 @@ Dentro de algumas horas (ou na próxima vez que alguém abrir a tela de Plugins)
 
 ## Segurança e desempenho
 
-- O endpoint público aceita no máximo 30 registros por minuto por IP, em janela fixa, e payloads de até 8 KB. Em Cloudflare, usa `CF-Connecting-IP`.
+- O endpoint público aceita no máximo 30 registros por minuto por IP, em janela fixa, e payloads de até 8 KB. Por padrão usa o IP visto pelo servidor.
 - O webhook exige segredo comparado com `hash_equals()`.
 - O token do HighLevel nunca é enviado ao navegador.
 - A tabela armazena somente atribuição, token e ID técnico do contato.
 - Registros expiram pela rotina diária de retenção.
+- Atribuições antigas no navegador expiram no prazo configurado, por padrão 90 dias.
 - Falhas do HighLevel mantêm o contato vinculado e são tentadas novamente a cada 5 minutos, até 8 tentativas; os últimos erros aparecem no painel.
 - Não há chamadas ao HighLevel durante o carregamento da página.
 - O plugin só altera links com `#wab=` ou `data-wab-message`.
 - Ao desinstalar, os dados são preservados por padrão. A exclusão total precisa ser ativada explicitamente no painel antes da remoção.
+
+Se a origem estiver protegida pela Cloudflare e não aceitar acesso direto, habilite o IP real no `wp-config.php`:
+
+```php
+define('WAB_TRUST_CLOUDFLARE', true);
+```
 
 ## Checklist de homologação
 

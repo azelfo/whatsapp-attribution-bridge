@@ -8,10 +8,19 @@
   const ONE = '\u200C';
   const FIRST_KEY = 'wab_first_attribution';
   const LAST_KEY = 'wab_last_attribution';
+  const ttlMs = Math.max(1, Number(config.ttlDays) || 90) * 86400000;
   const registered = new Set();
 
   const read = (key) => {
-    try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (_) { return null; }
+    try {
+      const value = JSON.parse(localStorage.getItem(key) || 'null');
+      const capturedAt = value && Date.parse(value.captured_at);
+      if (value && (!Number.isFinite(capturedAt) || Date.now() - capturedAt > ttlMs)) {
+        localStorage.removeItem(key);
+        return null;
+      }
+      return value;
+    } catch (_) { return null; }
   };
 
   const write = (key, value) => {

@@ -49,8 +49,24 @@ function wab_core_classify_source(array $payload)
     }
 
     $source = strtolower(trim(isset($payload['utm_source']) ? (string) $payload['utm_source'] : ''));
-    if (!empty($payload['fbclid']) || in_array($source, array('fb_ad', 'facebook', 'instagram', 'meta'), true)) {
+    $medium = strtolower(trim(isset($payload['utm_medium']) ? (string) $payload['utm_medium'] : ''));
+    $medium = preg_replace('/[^a-z0-9]+/', '_', $medium);
+    $paid = in_array($medium, array('cpc', 'ppc', 'paid', 'paid_social', 'paidsocial', 'display', 'cpm', 'cpv', 'ads'), true);
+
+    if (!empty($payload['fbclid']) || in_array($source, array('fb_ad', 'meta_ads'), true)) {
         return 'meta_ads';
+    }
+    if (!empty($payload['msclkid'])) {
+        return 'microsoft_ads';
+    }
+    if (in_array($source, array('facebook', 'instagram', 'meta'), true)) {
+        return $paid ? 'meta_ads' : 'organic_social';
+    }
+    if (in_array($source, array('google_ads', 'adwords'), true) || ($source === 'google' && $paid)) {
+        return 'google_ads';
+    }
+    if (in_array($source, array('bing_ads', 'microsoft_ads'), true) || (in_array($source, array('bing', 'microsoft'), true) && $paid)) {
+        return 'microsoft_ads';
     }
 
     if ($source !== '') {

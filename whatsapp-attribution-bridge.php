@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WhatsApp Attribution Bridge
  * Description: Liga cliques rastreados no WhatsApp a contatos do GoHighLevel.
- * Version: 0.3.3
+ * Version: 0.3.4
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Marcelo
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WAB_VERSION', '0.3.3');
+define('WAB_VERSION', '0.3.4');
 define('WAB_FILE', __FILE__);
 define('WAB_DIR', plugin_dir_path(__FILE__));
 require_once WAB_DIR . 'includes/core.php';
@@ -40,6 +40,7 @@ function wab_default_settings()
         'webhook_secret' => '',
         'processed_tag' => 'wab-attribution-processed',
         'retention_days' => 90,
+        'attribution_ttl_days' => 90,
         'delete_on_uninstall' => false,
         'field_map' => array(),
     );
@@ -129,6 +130,7 @@ function wab_maybe_upgrade()
 {
     if (get_option('wab_db_version') !== WAB_VERSION) {
         wab_install_schema();
+        wab_scrub_webhook_log();
     }
     wab_schedule_jobs();
 }
@@ -209,16 +211,18 @@ function wab_enqueue_tracker()
     wp_localize_script('wab-tracker', 'WAB_CONFIG', array(
         'endpoint' => rest_url('wab/v1/click'),
         'messages' => $public_messages,
+        'ttlDays' => max(1, min(365, (int) $settings['attribution_ttl_days'])),
     ));
 }
 add_action('wp_enqueue_scripts', 'wab_enqueue_tracker');
 
 function wab_client_ip()
 {
-    $candidates = array(
-        isset($_SERVER['HTTP_CF_CONNECTING_IP']) ? wp_unslash($_SERVER['HTTP_CF_CONNECTING_IP']) : '',
-        isset($_SERVER['REMOTE_ADDR']) ? wp_unslash($_SERVER['REMOTE_ADDR']) : '',
-    );
+    $candidates = array();
+    if (defined('WAB_TRUST_CLOUDFLARE') && WAB_TRUST_CLOUDFLARE && isset($_SERVER['HTTP_CF_CONNECTING_IP'])) {
+        $candidates[] = wp_unslash($_SERVER['HTTP_CF_CONNECTING_IP']);
+    }
+    $candidates[] = isset($_SERVER['REMOTE_ADDR']) ? wp_unslash($_SERVER['REMOTE_ADDR']) : '';
     foreach ($candidates as $candidate) {
         if (filter_var($candidate, FILTER_VALIDATE_IP)) {
             return (string) $candidate;
@@ -305,6 +309,9 @@ function wab_click(WP_REST_Request $request)
     }
 
     $data = $request->get_json_params();
+    if (!is_array($data)) {
+        return new WP_Error('wab_json', 'JSON inválido.', array('status' => 400));
+    }
     $token = isset($data['token']) ? strtolower((string) $data['token']) : '';
     $message_id = isset($data['message_id']) ? sanitize_key($data['message_id']) : '';
     $messages = wab_messages();
@@ -314,6 +321,7 @@ function wab_click(WP_REST_Request $request)
 
     $existing = $wpdb->get_var($wpdb->prepare('SELECT id FROM ' . wab_table() . ' WHERE token = %s', $token));
     if ($existing) {
+        wab_reconcile_pending_match($token);
         return rest_ensure_response(array('registered' => true, 'duplicate' => true));
     }
 
@@ -334,6 +342,7 @@ function wab_click(WP_REST_Request $request)
     if (!$inserted) {
         return new WP_Error('wab_database', 'Não foi possível registrar o clique.', array('status' => 500));
     }
+    wab_reconcile_pending_match($token);
     return new WP_REST_Response(array('registered' => true), 201);
 }
 
@@ -345,7 +354,7 @@ function wab_match_permission(WP_REST_Request $request)
         // Limita o log de falha de auth: sem isso, spam no endpoint publico viraria
         // escrita de option ilimitada (o rate limit do match roda so depois daqui).
         if (!wab_rate_limited('match_auth', 10, MINUTE_IN_SECONDS)) {
-            wab_log_webhook($secret === '' ? 'secret_nao_configurado' : 'segredo_invalido', $request->get_body());
+            wab_log_webhook($secret === '' ? 'secret_nao_configurado' : 'segredo_invalido');
         }
         return new WP_Error('wab_unauthorized', 'Não autorizado.', array('status' => 401));
     }
@@ -370,7 +379,7 @@ function wab_hl_request($method, $path, $body = null, $blocking = true)
             'Accept' => 'application/json',
             'Authorization' => 'Bearer ' . wab_hl_token(),
             'Content-Type' => 'application/json',
-            'Version' => '2021-07-28',
+            'Version' => 'v3',
         ),
     );
     if ($body !== null) {
@@ -382,9 +391,18 @@ function wab_hl_request($method, $path, $body = null, $blocking = true)
 function wab_add_processed_tag($contact_id)
 {
     $tag = (string) wab_settings()['processed_tag'];
-    if ($tag !== '') {
-        wab_hl_request('POST', 'contacts/' . rawurlencode($contact_id) . '/tags', array('tags' => array($tag)), false);
+    if ($tag === '') {
+        return true;
     }
+
+    $response = wab_hl_request('POST', 'contacts/' . rawurlencode($contact_id) . '/tags', array('tags' => array($tag)));
+    if (is_wp_error($response)) {
+        return $response;
+    }
+    $code = wp_remote_retrieve_response_code($response);
+    return $code >= 200 && $code < 300
+        ? true
+        : new WP_Error('wab_hl_tag', 'HighLevel TAG retornou HTTP ' . $code . '.');
 }
 
 function wab_apply_attribution($contact_id, $row)
@@ -417,14 +435,16 @@ function wab_apply_attribution($contact_id, $row)
         'first_campaign' => wab_core_payload_value($first, array('utm_campaign', 'utm_id', 'campaign_id')),
         'first_content' => wab_core_payload_value($first, array('utm_content', 'ad_id')),
         'first_term' => wab_core_payload_value($first, array('utm_term', 'utm_keyword')),
-        'first_click_id' => wab_core_payload_value($first, array('gclid', 'gbraid', 'wbraid', 'fbclid')),
+        'first_click_id' => wab_core_payload_value($first, array('gclid', 'gbraid', 'wbraid', 'fbclid', 'msclkid')),
+        'first_ad_group' => wab_core_payload_value($first, array('ad_group_id')),
         'first_landing' => wab_core_payload_value($first, array('landing_url')),
         'last_source' => $last_source,
         'last_medium' => wab_core_payload_value($last, array('utm_medium')),
         'last_campaign' => wab_core_payload_value($last, array('utm_campaign', 'utm_id', 'campaign_id')),
         'last_content' => wab_core_payload_value($last, array('utm_content', 'ad_id')),
         'last_term' => wab_core_payload_value($last, array('utm_term', 'utm_keyword')),
-        'last_click_id' => wab_core_payload_value($last, array('gclid', 'gbraid', 'wbraid', 'fbclid')),
+        'last_click_id' => wab_core_payload_value($last, array('gclid', 'gbraid', 'wbraid', 'fbclid', 'msclkid')),
+        'last_ad_group' => wab_core_payload_value($last, array('ad_group_id')),
         'last_landing' => wab_core_payload_value($last, array('landing_url')),
         'confidence' => 'exact',
         'method' => 'invisible_token',
@@ -487,6 +507,9 @@ function wab_process_attribution($row, $contact_id)
     }
 
     $result = wab_apply_attribution($contact_id, $row);
+    if (!is_wp_error($result)) {
+        $result = wab_add_processed_tag($contact_id);
+    }
     if (is_wp_error($result)) {
         $wpdb->update($table, array(
             'status' => 'pending',
@@ -502,15 +525,44 @@ function wab_process_attribution($row, $contact_id)
         'processing_at' => null,
         'last_error' => '',
     ), array('id' => $row->id));
-    wab_add_processed_tag($contact_id);
     return true;
+}
+
+function wab_pending_match_key($token)
+{
+    return 'wab_pending_' . $token;
+}
+
+function wab_reconcile_pending_match($token)
+{
+    global $wpdb;
+    $pending = get_transient(wab_pending_match_key($token));
+    if (!is_array($pending) || empty($pending['contact_id'])) {
+        return;
+    }
+
+    $row = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . wab_table() . ' WHERE token = %s', $token));
+    if (!$row) {
+        return;
+    }
+    if ($row->status === 'matched' || (!empty($row->contact_id) && !hash_equals((string) $row->contact_id, (string) $pending['contact_id']))) {
+        delete_transient(wab_pending_match_key($token));
+        return;
+    }
+
+    if (empty($row->contact_id)) {
+        $wpdb->update(wab_table(), array('contact_id' => (string) $pending['contact_id']), array('id' => $row->id));
+        $row->contact_id = (string) $pending['contact_id'];
+    }
+    delete_transient(wab_pending_match_key($token));
+    wab_process_attribution($row, (string) $row->contact_id);
 }
 
 function wab_retry_pending()
 {
     global $wpdb;
     $rows = $wpdb->get_results(
-        "SELECT * FROM " . wab_table() . " WHERE status = 'pending' AND contact_id IS NOT NULL AND contact_id <> '' AND attempts < 8 ORDER BY id ASC LIMIT 10"
+        "SELECT * FROM " . wab_table() . " WHERE contact_id IS NOT NULL AND contact_id <> '' AND attempts < 8 AND (status = 'pending' OR (status = 'processing' AND processing_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 MINUTE))) ORDER BY id ASC LIMIT 10"
     );
     foreach ($rows as $row) {
         wab_process_attribution($row, (string) $row->contact_id);
@@ -518,19 +570,29 @@ function wab_retry_pending()
 }
 add_action('wab_retry_pending', 'wab_retry_pending');
 
-// ponytail: ring buffer numa option, sem tabela. 50 entradas cobrem depurar um
-// workflow; se precisar de historico longo ou busca, ai sim vira tabela.
-function wab_log_webhook($reason, $body, $contact_id = '', $lido = null)
+function wab_scrub_webhook_log()
+{
+    $log = (array) get_option('wab_webhook_log', array());
+    foreach ($log as &$entry) {
+        unset($entry['body'], $entry['ip'], $entry['contact']);
+        if (!empty($entry['lido']) && is_array($entry['lido'])) {
+            $contact = isset($entry['lido']['contact_id']) ? $entry['lido']['contact_id'] : '';
+            $location = isset($entry['lido']['location_id']) ? $entry['lido']['location_id'] : '';
+            $entry['lido']['contact_id'] = $contact === '' || $contact === '(vazio)' ? '(vazio)' : 'presente';
+            $entry['lido']['location_id'] = $location === '' || $location === '(vazio)' ? '(vazio)' : 'presente';
+        }
+    }
+    unset($entry);
+    update_option('wab_webhook_log', array_slice($log, 0, 30), false);
+}
+
+// Guarda apenas diagnostico derivado. O payload bruto pode conter dados do paciente.
+function wab_log_webhook($reason, $lido = null)
 {
     $log = (array) get_option('wab_webhook_log', array());
     array_unshift($log, array(
         'at' => current_time('mysql', true),
         'reason' => substr((string) $reason, 0, 60),
-        'contact' => substr((string) $contact_id, 0, 100),
-        'ip' => wab_client_ip(),
-        // 4 KB: o customData costuma vir no fim do payload, depois dos dados do
-        // contato. Truncar curto demais escondia justamente o que importa.
-        'body' => substr((string) $body, 0, 4096),
         'lido' => is_array($lido) ? $lido : null,
     ));
     update_option('wab_webhook_log', array_slice($log, 0, 30), false);
@@ -542,17 +604,20 @@ function wab_match(WP_REST_Request $request)
 
     $error_code = is_wp_error($result) ? $result->get_error_code() : '';
     $data = is_wp_error($result) ? array() : (array) rest_ensure_response($result)->get_data();
-    $body = (array) $request->get_json_params();
+    $body = $request->get_json_params();
+    $body = is_array($body) ? $body : array();
     $custom = isset($body['customData']) && is_array($body['customData']) ? $body['customData'] : array();
 
     // Registra o que o plugin conseguiu LER do payload — sem isso, um campo que
     // chega no formato errado (message como objeto em vez de texto, por exemplo)
     // some em silencio e o log so mostra "no_token" sem dizer por que.
-    $msg = wab_core_body_field($body, $custom, 'message', array('message.body'));
+    $contact = wab_core_body_field($body, $custom, 'contact_id', array('contactId', 'contact.id'));
+    $location = wab_core_body_field($body, $custom, 'location_id', array('locationId', 'location.id'));
+    $msg = wab_core_body_field($body, $custom, 'message', array('body', 'message.body'));
     $lido = array(
         'tem_customData' => $custom ? 'sim' : 'NAO',
-        'contact_id' => wab_core_body_field($body, $custom, 'contact_id', array('contact.id')),
-        'location_id' => wab_core_body_field($body, $custom, 'location_id', array('location.id')),
+        'contact_id' => $contact === '' ? '(vazio)' : 'presente',
+        'location_id' => $location === '' ? '(vazio)' : 'presente',
         'message_chars' => strlen($msg),
         'invisiveis_na_message' => preg_match_all('/[\x{200B}\x{200C}]/u', $msg),
         'tokens_encontrados' => count(wab_core_decode_tokens($msg)),
@@ -560,8 +625,6 @@ function wab_match(WP_REST_Request $request)
 
     wab_log_webhook(
         wab_core_log_reason($error_code, $data),
-        $request->get_body(),
-        wab_core_body_field($body, $custom, 'contact_id', array('contact.id')),
         $lido
     );
 
@@ -577,16 +640,19 @@ function wab_match_run(WP_REST_Request $request)
         return rest_ensure_response(array('matched' => false, 'reason' => 'disabled'));
     }
 
-    if (strlen($request->get_body()) > 12288) {
-        return new WP_Error('wab_match_payload', 'Payload excede 12 KB.', array('status' => 413));
+    if (strlen($request->get_body()) > 65536) {
+        return new WP_Error('wab_match_payload', 'Payload excede 64 KB.', array('status' => 413));
     }
     $data = $request->get_json_params();
+    if (!is_array($data)) {
+        return new WP_Error('wab_json', 'JSON inválido.', array('status' => 400));
+    }
     // Alguns webhooks (ex.: HighLevel) mandam os pares "Dados personalizados" dentro de
     // customData em vez de soltos na raiz do corpo. Aceita os dois formatos.
     $custom = isset($data['customData']) && is_array($data['customData']) ? $data['customData'] : array();
-    $contact_id = sanitize_text_field(wab_core_body_field($data, $custom, 'contact_id', array('contact.id')));
-    $location_id = sanitize_text_field(wab_core_body_field($data, $custom, 'location_id', array('location.id')));
-    $message = substr(wab_core_body_field($data, $custom, 'message', array('message.body')), 0, 5000);
+    $contact_id = sanitize_text_field(wab_core_body_field($data, $custom, 'contact_id', array('contactId', 'contact.id')));
+    $location_id = sanitize_text_field(wab_core_body_field($data, $custom, 'location_id', array('locationId', 'location.id')));
+    $message = substr(wab_core_body_field($data, $custom, 'message', array('body', 'message.body')), 0, 5000);
     if (wab_rate_limited('match', 120, MINUTE_IN_SECONDS, $location_id !== '' ? $location_id : 'missing')) {
         return new WP_Error('wab_match_limit', 'Muitas requisições.', array('status' => 429));
     }
@@ -615,11 +681,13 @@ function wab_match_run(WP_REST_Request $request)
         }
     }
     if (!$row) {
+        set_transient(wab_pending_match_key($tokens[0]), array('contact_id' => $contact_id), 10 * MINUTE_IN_SECONDS);
+        // Fecha a janela em que o clique entra entre o SELECT acima e o transient.
+        wab_reconcile_pending_match($tokens[0]);
         return new WP_REST_Response(array('matched' => false, 'reason' => 'token_pending'), 202);
     }
     if ($row->status === 'matched') {
         if (hash_equals((string) $row->contact_id, $contact_id)) {
-            wab_add_processed_tag($contact_id);
             return rest_ensure_response(array('matched' => true, 'duplicate' => true));
         }
         return new WP_Error('wab_token_conflict', 'Token já associado a outro contato.', array('status' => 409));
@@ -696,6 +764,7 @@ function wab_save_settings()
         'webhook_secret' => !empty($_POST['webhook_secret']) ? sanitize_text_field(wp_unslash($_POST['webhook_secret'])) : $old['webhook_secret'],
         'processed_tag' => sanitize_text_field(isset($_POST['processed_tag']) ? wp_unslash($_POST['processed_tag']) : ''),
         'retention_days' => max(1, min(365, isset($_POST['retention_days']) ? (int) $_POST['retention_days'] : 90)),
+        'attribution_ttl_days' => max(1, min(365, isset($_POST['attribution_ttl_days']) ? (int) $_POST['attribution_ttl_days'] : 90)),
         'delete_on_uninstall' => !empty($_POST['delete_on_uninstall']),
         'field_map' => $clean_map,
     );
@@ -710,14 +779,14 @@ function wab_save_message()
         wp_die('Sem permissão.');
     }
     check_admin_referer('wab_save_message');
-    $name = sanitize_text_field(isset($_POST['name']) ? wp_unslash($_POST['name']) : '');
-    $id = sanitize_key(isset($_POST['message_id']) ? wp_unslash($_POST['message_id']) : '');
+    $name = substr(sanitize_text_field(isset($_POST['name']) ? wp_unslash($_POST['name']) : ''), 0, 100);
+    $id = substr(sanitize_key(isset($_POST['message_id']) ? wp_unslash($_POST['message_id']) : ''), 0, 100);
     $phone = preg_replace('/\D+/', '', isset($_POST['phone']) ? wp_unslash($_POST['phone']) : '');
     $message = sanitize_textarea_field(isset($_POST['message']) ? wp_unslash($_POST['message']) : '');
     if ($id === '') {
         $id = sanitize_title($name);
     }
-    if ($id === '' || strlen($phone) < 10 || $message === '') {
+    if ($name === '' || $id === '' || strlen($phone) < 10 || strlen($phone) > 15 || $message === '' || strlen($message) > 1000) {
         wab_admin_redirect('invalid_message');
     }
 
@@ -793,8 +862,7 @@ function wab_clear_webhook_log()
 }
 add_action('admin_post_wab_clear_webhook_log', 'wab_clear_webhook_log');
 
-// Reprocessa um payload de webhook sem precisar de mensagem nova: usa o corpo
-// guardado no log (ou um colado a mao) e roda a mesma logica do endpoint.
+// Reprocessa um payload colado pelo administrador sem persisti-lo no diagnostico.
 function wab_replay_webhook()
 {
     if (!current_user_can('manage_options')) {
@@ -802,21 +870,14 @@ function wab_replay_webhook()
     }
     check_admin_referer('wab_replay_webhook');
 
-    $body = '';
-    if (isset($_POST['log_index'])) {
-        $log = (array) get_option('wab_webhook_log', array());
-        $i = absint($_POST['log_index']);
-        $body = isset($log[$i]['body']) ? (string) $log[$i]['body'] : '';
-    } elseif (isset($_POST['payload'])) {
-        $body = trim((string) wp_unslash($_POST['payload']));
-    }
+    $body = isset($_POST['payload']) ? trim((string) wp_unslash($_POST['payload'])) : '';
 
     if ($body === '') {
         set_transient('wab_replay_result', array('ok' => false, 'text' => 'Nenhum payload informado.'), 300);
         wab_admin_redirect('replayed', 'webhooks');
     }
     if (json_decode($body, true) === null) {
-        set_transient('wab_replay_result', array('ok' => false, 'text' => 'Payload não é um JSON válido (o log guarda os primeiros 4 KB; se o original era maior, cole o payload completo).'), 300);
+        set_transient('wab_replay_result', array('ok' => false, 'text' => 'Payload não é um JSON válido.'), 300);
         wab_admin_redirect('replayed', 'webhooks');
     }
 
@@ -965,8 +1026,8 @@ function wab_admin_page()
         }
     }
     $map_example = array(
-        'first_source' => '', 'first_campaign' => '', 'first_term' => '', 'first_click_id' => '', 'first_landing' => '',
-        'last_source' => '', 'last_campaign' => '', 'last_term' => '', 'last_click_id' => '', 'last_landing' => '',
+        'first_source' => '', 'first_campaign' => '', 'first_term' => '', 'first_click_id' => '', 'first_ad_group' => '', 'first_landing' => '',
+        'last_source' => '', 'last_campaign' => '', 'last_term' => '', 'last_click_id' => '', 'last_ad_group' => '', 'last_landing' => '',
         'confidence' => '', 'method' => '', 'message_id' => '',
     );
     $map = array_merge($map_example, (array) $settings['field_map']);
@@ -1003,7 +1064,7 @@ function wab_admin_page()
         </h2>
 
         <?php if ($view === 'webhooks') : ?>
-            <p class="description">Toda chamada recebida em <code>/wab/v1/match</code>, inclusive as recusadas. Guarda as 30 mais recentes.</p>
+            <p class="description">Diagnóstico das 30 chamadas mais recentes em <code>/wab/v1/match</code>. O corpo bruto, IP e dados do paciente não são armazenados.</p>
             <?php $replay = get_transient('wab_replay_result'); ?>
             <?php if (is_array($replay)) : ?>
                 <div class="notice notice-<?php echo empty($replay['ok']) ? 'error' : 'success'; ?> inline" style="margin:10px 0">
@@ -1022,23 +1083,21 @@ function wab_admin_page()
                 </form>
             </details>
             <table class="widefat striped">
-                <thead><tr><th>Quando</th><th>Resultado</th><th>Contato</th><th>IP</th><th>Corpo recebido</th></tr></thead>
+                <thead><tr><th>Quando</th><th>Resultado</th><th>Leitura</th></tr></thead>
                 <tbody>
                 <?php if (!$webhook_log) : ?>
-                    <tr><td colspan="5">Nenhum webhook recebido ainda. Se o workflow do HighLevel já rodou, a chamada não chegou até aqui — verifique firewall/segurança e a URL configurada na ação.</td></tr>
+                    <tr><td colspan="3">Nenhum webhook recebido ainda. Se o workflow do HighLevel já rodou, a chamada não chegou até aqui — verifique firewall/segurança e a URL configurada na ação.</td></tr>
                 <?php endif; ?>
-                <?php foreach ($webhook_log as $indice => $entry) : ?>
+                <?php foreach ($webhook_log as $entry) : ?>
                     <tr>
                         <td><?php echo esc_html(wab_local_time(isset($entry['at']) ? $entry['at'] : '')); ?></td>
                         <td><?php echo wp_kses_post(wab_status_badge(isset($entry['reason']) ? $entry['reason'] : '')); ?></td>
-                        <td><?php echo esc_html(!empty($entry['contact']) ? $entry['contact'] : '—'); ?></td>
-                        <td><?php echo esc_html(isset($entry['ip']) ? $entry['ip'] : '—'); ?></td>
                         <td>
                             <?php if (!empty($entry['lido'])) : ?>
                                 <div style="margin-bottom:6px">
                                     <?php
                                     $l = $entry['lido'];
-                                    $alerta = (isset($l['tem_customData']) && $l['tem_customData'] === 'NAO') || empty($l['message_chars']);
+                                    $alerta = empty($l['message_chars']) || $l['contact_id'] === '(vazio)' || $l['location_id'] === '(vazio)';
                                     ?>
                                     <strong style="color:<?php echo $alerta ? '#d63638' : '#008a20'; ?>">O que o plugin leu:</strong>
                                     <code>customData=<?php echo esc_html($l['tem_customData']); ?></code>
@@ -1049,13 +1108,6 @@ function wab_admin_page()
                                     <code>tokens=<?php echo esc_html($l['tokens_encontrados']); ?></code>
                                 </div>
                             <?php endif; ?>
-                            <textarea class="code" readonly rows="3" style="width:100%"><?php echo esc_textarea(isset($entry['body']) ? $entry['body'] : ''); ?></textarea>
-                            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top:4px">
-                                <?php wp_nonce_field('wab_replay_webhook'); ?>
-                                <input type="hidden" name="action" value="wab_replay_webhook">
-                                <input type="hidden" name="log_index" value="<?php echo esc_attr($indice); ?>">
-                                <?php submit_button('Reprocessar este webhook', 'secondary small', 'submit', false); ?>
-                            </form>
                         </td>
                     </tr>
                 <?php endforeach; ?>
@@ -1100,7 +1152,7 @@ function wab_admin_page()
                         <td><?php echo esc_html(wab_local_time($record->clicked_at)); ?></td>
                         <td><?php echo esc_html($record->message_id); ?></td>
                         <td><?php echo esc_html($record->classified_source); ?></td>
-                        <td><?php echo wp_kses_post(wab_status_badge($record->status)); ?></td>
+                        <td><?php echo wp_kses_post(wab_status_badge($record->status === 'pending' && (int) $record->attempts >= 8 ? 'tentativas_esgotadas' : $record->status)); ?></td>
                         <td><?php echo esc_html($record->contact_id ? $record->contact_id : '—'); ?></td>
                         <td><?php echo esc_html(wab_local_time($record->matched_at)); ?></td>
                         <td><?php echo esc_html($record->attempts); ?></td>
@@ -1195,6 +1247,7 @@ function wab_admin_page()
                 <tr><th>Segredo do webhook</th><td><input class="large-text" type="password" name="webhook_secret" autocomplete="new-password" value="<?php echo esc_attr($settings['webhook_secret']); ?>"></td></tr>
                 <tr><th>Tag após atribuição</th><td><input class="regular-text" name="processed_tag" value="<?php echo esc_attr($settings['processed_tag']); ?>"></td></tr>
                 <tr><th>Retenção</th><td><input type="number" min="1" max="365" name="retention_days" value="<?php echo esc_attr($settings['retention_days']); ?>"> dias</td></tr>
+                <tr><th>Validade da atribuição</th><td><input type="number" min="1" max="365" name="attribution_ttl_days" value="<?php echo esc_attr($settings['attribution_ttl_days']); ?>"> dias<p class="description">Descarta first-touch e last-touch antigos no navegador.</p></td></tr>
                 <tr><th>Ao desinstalar</th><td><label><input type="checkbox" name="delete_on_uninstall" value="1" <?php checked($settings['delete_on_uninstall']); ?>> Apagar tabela, mensagens e configurações</label><p class="description">Desmarcado preserva os dados se o plugin for removido por engano.</p></td></tr>
                 <tr><th>Mapa de campos</th><td><textarea class="large-text code" rows="14" name="field_map"><?php echo esc_textarea(wp_json_encode($map, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)); ?></textarea><p class="description">Associe as chaves aos IDs dos campos personalizados do contato no HighLevel.</p></td></tr>
             </tbody></table>

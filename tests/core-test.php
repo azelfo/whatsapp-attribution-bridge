@@ -17,6 +17,9 @@ wab_assert(wab_core_decode_tokens('📅 ' . $marker . ' Quero agendar') === arra
 wab_assert(wab_core_decode_tokens($marker . "\u{200B}") === array(), 'Sequência desalinhada não pode virar token.');
 wab_assert(wab_core_classify_source(array('gclid' => 'x')) === 'google_ads', 'GCLID deve ser Google Ads.');
 wab_assert(wab_core_classify_source(array('fbclid' => 'x')) === 'meta_ads', 'FBCLID deve ser Meta Ads.');
+wab_assert(wab_core_classify_source(array('msclkid' => 'x')) === 'microsoft_ads', 'MSCLKID deve ser Microsoft Ads.');
+wab_assert(wab_core_classify_source(array('utm_source' => 'google', 'utm_medium' => 'cpc')) === 'google_ads', 'Google CPC sem GCLID deve continuar sendo Google Ads.');
+wab_assert(wab_core_classify_source(array('utm_source' => 'instagram', 'utm_medium' => 'organic')) === 'organic_social', 'Instagram orgânico não pode virar Meta Ads.');
 wab_assert(wab_core_classify_source(array('referrer' => 'https://www.google.com/search?q=x')) === 'organic_search', 'Google sem click ID deve ser orgânico.');
 wab_assert(wab_core_classify_source(array('referrer' => 'https://www.instagram.com/perfil')) === 'organic_social', 'Instagram sem click ID deve ser social orgânico.');
 wab_assert(wab_core_classify_source(array()) === 'direct', 'Sem sinais deve ser direto.');
@@ -42,21 +45,26 @@ wab_assert(wab_core_log_reason('', array('matched' => false, 'reason' => 'no_tok
 wab_assert(wab_core_log_reason('', array('matched' => true, 'confidence' => 'exact')) === 'matched', 'Sucesso sem reason deve logar matched.');
 wab_assert(wab_core_log_reason('', array()) === 'unknown', 'Sem codigo e sem dados deve logar unknown.');
 
-// Payload nativo do HighLevel: sem customData, message vem como objeto e a
-// location aninhada. O plugin precisa funcionar assim tambem.
+// Payload oficial de InboundMessage do HighLevel, sem customData.
 $nativo = array(
-    'contact_id' => 'qjyVJhs2szA8niA3AGqt',
-    'message' => array('type' => 20, 'body' => 'texto com token'),
-    'location' => array('id' => 'AQxc7RBeQjaGHX2lA6wO'),
+    'contactId' => 'qjyVJhs2szA8niA3AGqt',
+    'body' => 'texto com token',
+    'locationId' => 'AQxc7RBeQjaGHX2lA6wO',
 );
-wab_assert(wab_core_body_field($nativo, array(), 'message', array('message.body')) === 'texto com token', 'Deve ler message.body quando message e objeto.');
-wab_assert(wab_core_body_field($nativo, array(), 'location_id', array('location.id')) === 'AQxc7RBeQjaGHX2lA6wO', 'Deve ler location.id aninhado.');
-wab_assert(wab_core_body_field($nativo, array(), 'contact_id', array('contact.id')) === 'qjyVJhs2szA8niA3AGqt', 'contact_id na raiz continua tendo prioridade.');
-wab_assert(wab_core_body_field($nativo, array('message' => 'do customData'), 'message', array('message.body')) === 'do customData', 'customData tem prioridade sobre o caminho nativo.');
-wab_assert(wab_core_dig($nativo, 'message.body') === 'texto com token', 'dig resolve caminho de dois niveis.');
-wab_assert(wab_core_dig($nativo, 'message') === '', 'dig devolve vazio quando o no final nao e escalar.');
+wab_assert(wab_core_body_field($nativo, array(), 'message', array('body', 'message.body')) === 'texto com token', 'Deve ler body nativo.');
+wab_assert(wab_core_body_field($nativo, array(), 'location_id', array('locationId', 'location.id')) === 'AQxc7RBeQjaGHX2lA6wO', 'Deve ler locationId nativo.');
+wab_assert(wab_core_body_field($nativo, array(), 'contact_id', array('contactId', 'contact.id')) === 'qjyVJhs2szA8niA3AGqt', 'Deve ler contactId nativo.');
+wab_assert(wab_core_body_field($nativo, array('message' => 'do customData'), 'message', array('body', 'message.body')) === 'do customData', 'customData tem prioridade sobre o caminho nativo.');
 wab_assert(wab_core_dig($nativo, 'nao.existe') === '', 'dig devolve vazio para caminho inexistente.');
 wab_assert(wab_core_body_field(array(), array(), 'message', array('message.body')) === '', 'Payload vazio devolve vazio, sem erro.');
+
+$workflow = array(
+    'contact_id' => 'qjyVJhs2szA8niA3AGqt',
+    'message' => array('body' => 'texto do workflow'),
+    'location' => array('id' => 'AQxc7RBeQjaGHX2lA6wO'),
+);
+wab_assert(wab_core_body_field($workflow, array(), 'message', array('body', 'message.body')) === 'texto do workflow', 'Formato aninhado do workflow continua aceito.');
+wab_assert(wab_core_body_field($workflow, array(), 'location_id', array('locationId', 'location.id')) === 'AQxc7RBeQjaGHX2lA6wO', 'location.id do workflow continua aceito.');
 
 $campaign_keys = array('utm_campaign', 'utm_id', 'campaign_id');
 wab_assert(wab_core_payload_value(array('utm_campaign' => 'nome', 'utm_id' => '123'), $campaign_keys) === 'nome', 'utm_campaign tem precedencia sobre utm_id.');
