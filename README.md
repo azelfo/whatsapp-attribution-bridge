@@ -1,4 +1,4 @@
-# WhatsApp Attribution Bridge 0.3.0
+# WhatsApp Attribution Bridge 0.3.1
 
 Plugin beta para ligar a origem de um clique no WordPress ao contato criado quando a mensagem chega pelo WhatsApp no GoHighLevel.
 

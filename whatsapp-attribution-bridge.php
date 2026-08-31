@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WhatsApp Attribution Bridge
  * Description: Liga cliques rastreados no WhatsApp a contatos do GoHighLevel.
- * Version: 0.3.0
+ * Version: 0.3.1
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Marcelo
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WAB_VERSION', '0.3.0');
+define('WAB_VERSION', '0.3.1');
 define('WAB_FILE', __FILE__);
 define('WAB_DIR', plugin_dir_path(__FILE__));
 require_once WAB_DIR . 'includes/core.php';
@@ -520,7 +520,7 @@ add_action('wab_retry_pending', 'wab_retry_pending');
 
 // ponytail: ring buffer numa option, sem tabela. 50 entradas cobrem depurar um
 // workflow; se precisar de historico longo ou busca, ai sim vira tabela.
-function wab_log_webhook($reason, $body, $contact_id = '')
+function wab_log_webhook($reason, $body, $contact_id = '', $lido = null)
 {
     $log = (array) get_option('wab_webhook_log', array());
     array_unshift($log, array(
@@ -528,9 +528,12 @@ function wab_log_webhook($reason, $body, $contact_id = '')
         'reason' => substr((string) $reason, 0, 60),
         'contact' => substr((string) $contact_id, 0, 100),
         'ip' => wab_client_ip(),
-        'body' => substr((string) $body, 0, 600),
+        // 4 KB: o customData costuma vir no fim do payload, depois dos dados do
+        // contato. Truncar curto demais escondia justamente o que importa.
+        'body' => substr((string) $body, 0, 4096),
+        'lido' => is_array($lido) ? $lido : null,
     ));
-    update_option('wab_webhook_log', array_slice($log, 0, 50), false);
+    update_option('wab_webhook_log', array_slice($log, 0, 30), false);
 }
 
 function wab_match(WP_REST_Request $request)
@@ -539,12 +542,27 @@ function wab_match(WP_REST_Request $request)
 
     $error_code = is_wp_error($result) ? $result->get_error_code() : '';
     $data = is_wp_error($result) ? array() : (array) rest_ensure_response($result)->get_data();
-    $body = $request->get_json_params();
+    $body = (array) $request->get_json_params();
     $custom = isset($body['customData']) && is_array($body['customData']) ? $body['customData'] : array();
+
+    // Registra o que o plugin conseguiu LER do payload — sem isso, um campo que
+    // chega no formato errado (message como objeto em vez de texto, por exemplo)
+    // some em silencio e o log so mostra "no_token" sem dizer por que.
+    $msg = wab_core_body_field($body, $custom, 'message');
+    $lido = array(
+        'tem_customData' => $custom ? 'sim' : 'NAO',
+        'contact_id' => wab_core_body_field($body, $custom, 'contact_id'),
+        'location_id' => wab_core_body_field($body, $custom, 'location_id'),
+        'message_chars' => strlen($msg),
+        'invisiveis_na_message' => preg_match_all('/[\x{200B}\x{200C}]/u', $msg),
+        'tokens_encontrados' => count(wab_core_decode_tokens($msg)),
+    );
+
     wab_log_webhook(
         wab_core_log_reason($error_code, $data),
         $request->get_body(),
-        wab_core_body_field((array) $body, $custom, 'contact_id')
+        wab_core_body_field($body, $custom, 'contact_id'),
+        $lido
     );
 
     return $result;
@@ -950,7 +968,24 @@ function wab_admin_page()
                         <td><?php echo wp_kses_post(wab_status_badge(isset($entry['reason']) ? $entry['reason'] : '')); ?></td>
                         <td><?php echo esc_html(!empty($entry['contact']) ? $entry['contact'] : '—'); ?></td>
                         <td><?php echo esc_html(isset($entry['ip']) ? $entry['ip'] : '—'); ?></td>
-                        <td><textarea class="code" readonly rows="2" style="width:100%"><?php echo esc_textarea(isset($entry['body']) ? $entry['body'] : ''); ?></textarea></td>
+                        <td>
+                            <?php if (!empty($entry['lido'])) : ?>
+                                <div style="margin-bottom:6px">
+                                    <?php
+                                    $l = $entry['lido'];
+                                    $alerta = (isset($l['tem_customData']) && $l['tem_customData'] === 'NAO') || empty($l['message_chars']);
+                                    ?>
+                                    <strong style="color:<?php echo $alerta ? '#d63638' : '#008a20'; ?>">O que o plugin leu:</strong>
+                                    <code>customData=<?php echo esc_html($l['tem_customData']); ?></code>
+                                    <code>contact_id=<?php echo esc_html($l['contact_id'] !== '' ? $l['contact_id'] : '(vazio)'); ?></code>
+                                    <code>location_id=<?php echo esc_html($l['location_id'] !== '' ? $l['location_id'] : '(vazio)'); ?></code>
+                                    <code>message=<?php echo esc_html($l['message_chars']); ?> chars</code>
+                                    <code>invisíveis=<?php echo esc_html($l['invisiveis_na_message']); ?></code>
+                                    <code>tokens=<?php echo esc_html($l['tokens_encontrados']); ?></code>
+                                </div>
+                            <?php endif; ?>
+                            <textarea class="code" readonly rows="3" style="width:100%"><?php echo esc_textarea(isset($entry['body']) ? $entry['body'] : ''); ?></textarea>
+                        </td>
                     </tr>
                 <?php endforeach; ?>
                 </tbody>
