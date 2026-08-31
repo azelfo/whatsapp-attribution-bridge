@@ -98,4 +98,39 @@ blockedHandlers.click({ target: blockedLink });
 assert.equal(fetchCalls, 1, 'fetch keepalive deve assumir quando sendBeacon falhar');
 assert.match(blockedLink.dataset.wabToken, /^[a-f0-9]{12}$/, 'localStorage bloqueado não pode impedir o link');
 
+// Regressao 0.2.7: com o script no <head>, o DOM ainda esta 'loading' quando ele roda.
+// O prepare em massa precisa esperar o DOMContentLoaded, senao nenhum link e preparado.
+const headHandlers = {};
+const headLink = {
+  href: 'https://wa.me/5571999999999?text=Antiga#wab=agendamento',
+  dataset: {},
+  closest() { return this; }
+};
+let domReadyCallback = null;
+const headContext = {
+  window: context.window,
+  location: context.location,
+  document: {
+    readyState: 'loading',
+    referrer: '',
+    querySelectorAll() { return [headLink]; },
+    addEventListener(name, cb) {
+      if (name === 'DOMContentLoaded') { domReadyCallback = cb; } else { headHandlers[name] = cb; }
+    }
+  },
+  localStorage: { getItem: () => null, setItem() {} },
+  navigator: { sendBeacon() { return true; } },
+  crypto: webcrypto, URL, URLSearchParams, Blob, fetch: async () => ({ ok: true }), console
+};
+vm.createContext(headContext);
+vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '..', 'assets', 'tracker.js'), 'utf8'), headContext);
+
+assert.equal(headLink.dataset.wabPrepared, undefined, 'com DOM em loading, nada deve ser preparado ainda');
+assert.ok(domReadyCallback, 'deve registrar DOMContentLoaded quando o DOM ainda carrega');
+assert.ok(headHandlers.pointerdown, 'listeners de clique entram imediatamente, sem esperar o DOM');
+
+domReadyCallback();
+assert.equal(headLink.dataset.wabPrepared, '1', 'apos DOMContentLoaded o link precisa estar preparado');
+assert.match(new URL(headLink.href).searchParams.get('text'), /^[​‌]{48}.+[​‌]{48}$/u);
+
 console.log('tracker.test.js: ok');

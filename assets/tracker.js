@@ -118,12 +118,23 @@
     return link && messageIdFrom(link) ? link : null;
   };
 
+  const prepareAll = () =>
+    document.querySelectorAll('a[href*="#wab="], a[data-wab-message]').forEach(prepare);
+
   capture();
-  document.querySelectorAll('a[href*="#wab="], a[data-wab-message]').forEach(prepare);
+
+  // Os listeners entram já, ainda no <head>: garantem o token mesmo num clique
+  // anterior ao DOM ficar pronto. O prepare em massa espera os links existirem.
   ['pointerdown', 'click', 'auxclick'].forEach((eventName) => {
     document.addEventListener(eventName, (event) => {
       const link = trackedLink(event.target);
       if (link) register(prepare(link));
     }, true);
   });
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', prepareAll);
+  } else {
+    prepareAll();
+  }
 })();
