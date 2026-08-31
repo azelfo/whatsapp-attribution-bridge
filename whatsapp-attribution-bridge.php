@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WhatsApp Attribution Bridge
  * Description: Liga cliques rastreados no WhatsApp a contatos do GoHighLevel.
- * Version: 0.3.2
+ * Version: 0.3.3
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Marcelo
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WAB_VERSION', '0.3.2');
+define('WAB_VERSION', '0.3.3');
 define('WAB_FILE', __FILE__);
 define('WAB_DIR', plugin_dir_path(__FILE__));
 require_once WAB_DIR . 'includes/core.php';
@@ -793,6 +793,53 @@ function wab_clear_webhook_log()
 }
 add_action('admin_post_wab_clear_webhook_log', 'wab_clear_webhook_log');
 
+// Reprocessa um payload de webhook sem precisar de mensagem nova: usa o corpo
+// guardado no log (ou um colado a mao) e roda a mesma logica do endpoint.
+function wab_replay_webhook()
+{
+    if (!current_user_can('manage_options')) {
+        wp_die('Sem permissão.');
+    }
+    check_admin_referer('wab_replay_webhook');
+
+    $body = '';
+    if (isset($_POST['log_index'])) {
+        $log = (array) get_option('wab_webhook_log', array());
+        $i = absint($_POST['log_index']);
+        $body = isset($log[$i]['body']) ? (string) $log[$i]['body'] : '';
+    } elseif (isset($_POST['payload'])) {
+        $body = trim((string) wp_unslash($_POST['payload']));
+    }
+
+    if ($body === '') {
+        set_transient('wab_replay_result', array('ok' => false, 'text' => 'Nenhum payload informado.'), 300);
+        wab_admin_redirect('replayed', 'webhooks');
+    }
+    if (json_decode($body, true) === null) {
+        set_transient('wab_replay_result', array('ok' => false, 'text' => 'Payload não é um JSON válido (o log guarda os primeiros 4 KB; se o original era maior, cole o payload completo).'), 300);
+        wab_admin_redirect('replayed', 'webhooks');
+    }
+
+    $request = new WP_REST_Request('POST', '/wab/v1/match');
+    $request->set_header('content-type', 'application/json');
+    $request->set_body($body);
+    $result = wab_match($request);
+
+    if (is_wp_error($result)) {
+        $texto = 'Falhou: ' . $result->get_error_message();
+        $ok = false;
+    } else {
+        $dados = (array) rest_ensure_response($result)->get_data();
+        $ok = !empty($dados['matched']);
+        $texto = $ok
+            ? 'Atribuição aplicada com sucesso.'
+            : 'Não casou — motivo: ' . (isset($dados['reason']) ? $dados['reason'] : 'desconhecido');
+    }
+    set_transient('wab_replay_result', array('ok' => $ok, 'text' => $texto), 300);
+    wab_admin_redirect('replayed', 'webhooks');
+}
+add_action('admin_post_wab_replay_webhook', 'wab_replay_webhook');
+
 function wab_test_connection()
 {
     if (!current_user_can('manage_options')) {
@@ -939,6 +986,7 @@ function wab_admin_page()
             'nothing_selected' => array('error', 'Nenhum registro selecionado.'),
             'records_cleared' => array('success', 'Histórico limpo.'),
             'webhooks_cleared' => array('success', 'Log de webhooks limpo.'),
+            'replayed' => array('success', 'Payload reprocessado — veja o resultado abaixo.'),
         );
         if (isset($notices[$notice_key])) : ?>
             <div class="notice notice-<?php echo esc_attr($notices[$notice_key][0]); ?> is-dismissible"><p><?php echo esc_html($notices[$notice_key][1]); ?></p></div>
@@ -955,14 +1003,31 @@ function wab_admin_page()
         </h2>
 
         <?php if ($view === 'webhooks') : ?>
-            <p class="description">Toda chamada recebida em <code>/wab/v1/match</code>, inclusive as recusadas. Guarda as 50 mais recentes.</p>
+            <p class="description">Toda chamada recebida em <code>/wab/v1/match</code>, inclusive as recusadas. Guarda as 30 mais recentes.</p>
+            <?php $replay = get_transient('wab_replay_result'); ?>
+            <?php if (is_array($replay)) : ?>
+                <div class="notice notice-<?php echo empty($replay['ok']) ? 'error' : 'success'; ?> inline" style="margin:10px 0">
+                    <p><strong>Reprocessamento:</strong> <?php echo esc_html($replay['text']); ?></p>
+                </div>
+            <?php endif; ?>
+
+            <details style="margin:10px 0">
+                <summary style="cursor:pointer;color:#2271b1">Testar um payload manualmente</summary>
+                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top:8px">
+                    <?php wp_nonce_field('wab_replay_webhook'); ?>
+                    <input type="hidden" name="action" value="wab_replay_webhook">
+                    <textarea name="payload" class="large-text code" rows="5" placeholder='{"contact_id":"...","location":{"id":"..."},"message":{"body":"..."}}'></textarea>
+                    <p class="description">Cole o corpo JSON que o HighLevel envia. O plugin processa como se fosse uma chamada real — útil para testar sem depender de mensagem nova.</p>
+                    <?php submit_button('Processar payload', 'secondary', 'submit', false); ?>
+                </form>
+            </details>
             <table class="widefat striped">
                 <thead><tr><th>Quando</th><th>Resultado</th><th>Contato</th><th>IP</th><th>Corpo recebido</th></tr></thead>
                 <tbody>
                 <?php if (!$webhook_log) : ?>
                     <tr><td colspan="5">Nenhum webhook recebido ainda. Se o workflow do HighLevel já rodou, a chamada não chegou até aqui — verifique firewall/segurança e a URL configurada na ação.</td></tr>
                 <?php endif; ?>
-                <?php foreach ($webhook_log as $entry) : ?>
+                <?php foreach ($webhook_log as $indice => $entry) : ?>
                     <tr>
                         <td><?php echo esc_html(wab_local_time(isset($entry['at']) ? $entry['at'] : '')); ?></td>
                         <td><?php echo wp_kses_post(wab_status_badge(isset($entry['reason']) ? $entry['reason'] : '')); ?></td>
@@ -985,6 +1050,12 @@ function wab_admin_page()
                                 </div>
                             <?php endif; ?>
                             <textarea class="code" readonly rows="3" style="width:100%"><?php echo esc_textarea(isset($entry['body']) ? $entry['body'] : ''); ?></textarea>
+                            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top:4px">
+                                <?php wp_nonce_field('wab_replay_webhook'); ?>
+                                <input type="hidden" name="action" value="wab_replay_webhook">
+                                <input type="hidden" name="log_index" value="<?php echo esc_attr($indice); ?>">
+                                <?php submit_button('Reprocessar este webhook', 'secondary small', 'submit', false); ?>
+                            </form>
                         </td>
                     </tr>
                 <?php endforeach; ?>

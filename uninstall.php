@@ -19,3 +19,4 @@ delete_option('wab_messages');
 delete_option('wab_db_version');
 delete_option('wab_webhook_log');
 delete_transient('wab_conn_test');
+delete_transient('wab_replay_result');
